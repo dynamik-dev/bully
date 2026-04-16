@@ -2,6 +2,32 @@
 
 An agent-native lint pipeline for Claude Code. One config file (`.agentic-lint.yml`), one enforcement point (`PostToolUse` hook), one violation format. Works for any language — rules are scoped by file glob, not by language declaration.
 
+## The config
+
+A `.agentic-lint.yml` is a flat list of rules. Each rule says what to check, where it applies, how bad it is, and which engine runs it — `script` (deterministic shell command) or `semantic` (natural-language rule the agent evaluates against the diff):
+
+```yaml
+rules:
+  no-console-log:
+    description: "No `console.log` in committed source -- use the project logger."
+    engine: script
+    scope: ["src/**/*.ts", "src/**/*.tsx"]
+    severity: error
+    script: "grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0"
+
+  prefer-derived-state:
+    description: >
+      React components should not use `useEffect` to derive state from
+      props. Compute the value directly during render (or with `useMemo`
+      if expensive). Effect-based derivation causes unnecessary renders
+      and stale reads.
+    engine: semantic
+    scope: "src/**/*.tsx"
+    severity: warning
+```
+
+That's the whole surface area. The first rule runs a grep on every edited `.ts`/`.tsx`; the second ships the diff to the agent with the description as the evaluation prompt. No plugins, no DSL — just globs, shell, and prose.
+
 ## What it does
 
 Every time an agent edits a file, the hook runs a two-phase evaluation:
