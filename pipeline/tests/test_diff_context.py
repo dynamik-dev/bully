@@ -10,9 +10,7 @@ from pipeline import build_diff_context
 
 def test_edit_produces_unified_diff_with_line_numbers(tmp_path):
     file_path = tmp_path / "sample.txt"
-    file_path.write_text(
-        "line one\nline two\nline three new\nline four\nline five\n"
-    )
+    file_path.write_text("line one\nline two\nline three new\nline four\nline five\n")
     diff = build_diff_context(
         tool_name="Edit",
         file_path=str(file_path),
@@ -43,6 +41,7 @@ def test_edit_diff_line_numbers_match_file_position(tmp_path):
     hunk_line = next(line for line in diff.splitlines() if line.startswith("@@"))
     # Extract the starting line number from @@ -N,M +N,M @@
     import re
+
     m = re.search(r"@@ -(\d+)", hunk_line)
     assert m is not None
     start = int(m.group(1))

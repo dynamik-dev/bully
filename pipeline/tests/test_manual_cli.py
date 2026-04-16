@@ -19,21 +19,30 @@ def run_cli(args, stdin=""):
 
 
 def test_flag_form_accepts_config_and_file():
-    r = run_cli([
-        "--config", str(FIXTURES / "basic-config.yml"),
-        "--file", str(FIXTURES / "violation.php"),
-    ])
+    r = run_cli(
+        [
+            "--config",
+            str(FIXTURES / "basic-config.yml"),
+            "--file",
+            str(FIXTURES / "violation.php"),
+        ]
+    )
     assert r.returncode == 2
 
 
 def test_rule_filter_runs_only_matching_rule():
     # basic-config.yml has no-compact (script) and inline-single-use-vars (semantic).
     # Filter to just the semantic rule -- should skip script, produce evaluate status.
-    r = run_cli([
-        "--config", str(FIXTURES / "basic-config.yml"),
-        "--file", str(FIXTURES / "violation.php"),
-        "--rule", "inline-single-use-vars",
-    ])
+    r = run_cli(
+        [
+            "--config",
+            str(FIXTURES / "basic-config.yml"),
+            "--file",
+            str(FIXTURES / "violation.php"),
+            "--rule",
+            "inline-single-use-vars",
+        ]
+    )
     # Semantic-only → exit 0, evaluate payload on stdout
     assert r.returncode == 0
     assert "inline-single-use-vars" in r.stdout
@@ -41,11 +50,16 @@ def test_rule_filter_runs_only_matching_rule():
 
 
 def test_rule_filter_nonexistent_rule():
-    r = run_cli([
-        "--config", str(FIXTURES / "basic-config.yml"),
-        "--file", str(FIXTURES / "violation.php"),
-        "--rule", "does-not-exist",
-    ])
+    r = run_cli(
+        [
+            "--config",
+            str(FIXTURES / "basic-config.yml"),
+            "--file",
+            str(FIXTURES / "violation.php"),
+            "--rule",
+            "does-not-exist",
+        ]
+    )
     # No matching rule → pass
     assert r.returncode == 0
     assert '"status"' in r.stdout
@@ -53,11 +67,15 @@ def test_rule_filter_nonexistent_rule():
 
 
 def test_print_prompt_outputs_semantic_prompt():
-    r = run_cli([
-        "--config", str(FIXTURES / "basic-config.yml"),
-        "--file", str(FIXTURES / "clean.php"),
-        "--print-prompt",
-    ])
+    r = run_cli(
+        [
+            "--config",
+            str(FIXTURES / "basic-config.yml"),
+            "--file",
+            str(FIXTURES / "clean.php"),
+            "--print-prompt",
+        ]
+    )
     assert r.returncode == 0
     # The prompt text should mention the rule and the file
     assert "inline-single-use-vars" in r.stdout
@@ -65,8 +83,10 @@ def test_print_prompt_outputs_semantic_prompt():
 
 
 def test_positional_form_still_works_for_hook_compat():
-    r = run_cli([
-        str(FIXTURES / "basic-config.yml"),
-        str(FIXTURES / "violation.php"),
-    ])
+    r = run_cli(
+        [
+            str(FIXTURES / "basic-config.yml"),
+            str(FIXTURES / "violation.php"),
+        ]
+    )
     assert r.returncode == 2

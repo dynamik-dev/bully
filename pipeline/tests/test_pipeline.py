@@ -1,6 +1,5 @@
 """Tests for semantic payload builder and full pipeline orchestration."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -13,7 +12,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def test_payload_includes_file_and_diff():
     rules = [
-        Rule(id="test-rule", description="Test description", engine="semantic", scope="*", severity="error"),
+        Rule(
+            id="test-rule",
+            description="Test description",
+            engine="semantic",
+            scope="*",
+            severity="error",
+        ),
     ]
     payload = build_semantic_payload("test.php", "+ new line", ["no-compact"], rules)
     assert payload["file"] == "test.php"
@@ -31,7 +36,9 @@ def test_payload_includes_passed_checks():
 def test_payload_includes_semantic_rules():
     rules = [
         Rule(id="rule-a", description="First rule", engine="semantic", scope="*", severity="error"),
-        Rule(id="rule-b", description="Second rule", engine="semantic", scope="*", severity="warning"),
+        Rule(
+            id="rule-b", description="Second rule", engine="semantic", scope="*", severity="warning"
+        ),
     ]
     payload = build_semantic_payload("test.php", "diff", [], rules)
     assert len(payload["evaluate"]) == 2

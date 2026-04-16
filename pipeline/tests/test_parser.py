@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline import Rule, parse_config, filter_rules
+from pipeline import Rule, filter_rules, parse_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -75,6 +75,8 @@ def test_filter_no_match_returns_empty():
 
 
 def test_filter_wildcard_scope_matches_all():
-    rules = [Rule(id="universal", description="test", engine="semantic", scope="*", severity="error")]
+    rules = [
+        Rule(id="universal", description="test", engine="semantic", scope="*", severity="error")
+    ]
     assert len(filter_rules(rules, "anything.txt")) == 1
     assert len(filter_rules(rules, "deep/nested/file.php")) == 1

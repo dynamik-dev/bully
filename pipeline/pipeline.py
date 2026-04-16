@@ -49,9 +49,8 @@ def _strip_inline_comment(raw: str) -> str:
             in_single = not in_single
         elif ch == '"' and not in_single:
             in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            if i == 0 or raw[i - 1].isspace():
-                return raw[:i].rstrip()
+        elif ch == "#" and not in_single and not in_double and (i == 0 or raw[i - 1].isspace()):
+            return raw[:i].rstrip()
     return raw
 
 
@@ -65,9 +64,8 @@ def _parse_scalar(raw: str) -> str:
     - `foo` -> `foo`
     """
     raw = _strip_inline_comment(raw).strip()
-    if len(raw) >= 2:
-        if (raw[0] == '"' and raw[-1] == '"') or (raw[0] == "'" and raw[-1] == "'"):
-            return raw[1:-1]
+    if len(raw) >= 2 and ((raw[0] == '"' and raw[-1] == '"') or (raw[0] == "'" and raw[-1] == "'")):
+        return raw[1:-1]
     return raw
 
 
@@ -470,9 +468,7 @@ def _append_telemetry(
     latency_ms: int,
 ) -> None:
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
-            "+00:00", "Z"
-        ),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "file": file_path,
         "status": status,
         "latency_ms": latency_ms,
@@ -635,9 +631,7 @@ def _build_semantic_prompt(payload: dict) -> str:
     ]
     passed = payload.get("passed_checks", [])
     if passed:
-        lines.append(
-            f"Already passed (do not re-evaluate): {', '.join(passed)}"
-        )
+        lines.append(f"Already passed (do not re-evaluate): {', '.join(passed)}")
         lines.append("")
     lines.append("Rules to evaluate:")
     for r in payload.get("evaluate", []):
@@ -704,11 +698,7 @@ def main() -> None:
     file_path = args.file_path
 
     if not os.path.exists(config_path):
-        print(
-            json.dumps(
-                {"status": "pass", "file": file_path, "reason": "no config found"}
-            )
-        )
+        print(json.dumps({"status": "pass", "file": file_path, "reason": "no config found"}))
         sys.exit(0)
 
     if args.diff is not None:

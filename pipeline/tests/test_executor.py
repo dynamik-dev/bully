@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline import Rule, Violation, execute_script_rule, parse_script_output
+from pipeline import Rule, execute_script_rule, parse_script_output
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

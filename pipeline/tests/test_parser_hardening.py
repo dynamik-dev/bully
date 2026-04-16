@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline import Rule, parse_config, filter_rules
+from pipeline import filter_rules, parse_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -59,6 +59,7 @@ def test_mismatched_outer_quotes_not_stripped():
     # If only one side has a quote, don't strip it -- avoids eating legitimate characters.
     # We test this via the parser helper so we don't need a fixture file.
     from pipeline import _parse_scalar
+
     assert _parse_scalar('"foo') == '"foo'
     assert _parse_scalar('foo"') == 'foo"'
     assert _parse_scalar('"foo"') == "foo"

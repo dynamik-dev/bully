@@ -1,7 +1,6 @@
 """Tests for telemetry logging (opt-in via .agentic-lint/ directory)."""
 
 import json
-import shutil
 import sys
 from pathlib import Path
 

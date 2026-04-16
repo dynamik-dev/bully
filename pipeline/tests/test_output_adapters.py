@@ -40,10 +40,7 @@ def test_phpstan_style_file_line_message():
 
 
 def test_multiple_mixed_lines():
-    out = (
-        "src/a.ts:10:3: Unused variable x\n"
-        "src/a.ts:22:7: Missing return type\n"
-    )
+    out = "src/a.ts:10:3: Unused variable x\nsrc/a.ts:22:7: Missing return type\n"
     vs = parse_script_output("eslint", "error", out)
     assert len(vs) == 2
     assert vs[0].line == 10
