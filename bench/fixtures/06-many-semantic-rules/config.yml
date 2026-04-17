@@ -1,0 +1,101 @@
+rules:
+  sem-01:
+    description: Do not hardcode API keys, tokens, passwords, or other secret credentials in source code.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-02:
+    description: Avoid broad exception handlers that swallow errors silently.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-03:
+    description: Avoid mutable default arguments in function signatures.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-04:
+    description: Use context managers for file and resource handling.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-05:
+    description: Do not use assert for input validation in production code paths.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-06:
+    description: Avoid globally-mutable state; prefer explicit dependency injection.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-07:
+    description: Do not catch Exception or BaseException without re-raising.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-08:
+    description: Prefer f-strings over .format() and %-formatting.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-09:
+    description: Do not log sensitive values (passwords, tokens, PII).
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-10:
+    description: Avoid running subprocess with shell=True unless the command is shlex-quoted.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-11:
+    description: Prefer pathlib.Path over os.path for new code.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-12:
+    description: Do not use print() for operational logging; use the logging module.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-13:
+    description: Avoid time.sleep() in request handlers.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-14:
+    description: Prefer list/dict/set comprehensions over map+filter when it improves clarity.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-15:
+    description: Do not silently drop exceptions in background tasks.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-16:
+    description: Check for file existence with Path.exists() rather than try/except FileNotFoundError when not needed.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-17:
+    description: Do not commit debugging breakpoint()/pdb.set_trace() calls.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error
+  sem-18:
+    description: Prefer dataclasses over manually-defined __init__/__eq__/__repr__ for data-holding classes.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-19:
+    description: Use type hints on public function signatures.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning
+  sem-20:
+    description: Do not hard-code environment-specific paths; use configuration.
+    engine: semantic
+    scope: "**/*.py"
+    severity: warning

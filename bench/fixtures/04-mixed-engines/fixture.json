@@ -1,0 +1,7 @@
+{
+  "name": "04-mixed-engines",
+  "description": "One rule per engine, moderate Python edit",
+  "file_path": "bench/fixtures/04-mixed-engines/target.py",
+  "edit_type": "Edit",
+  "diff": "--- a/target.py\n+++ b/target.py\n@@ -1,4 +1,8 @@\n import os\n \n def main():\n+    x = os.getenv('X')\n+    y = {'a': 1, 'b': 2}\n+    for k, v in y.items():\n+        pass\n     return 0\n"
+}

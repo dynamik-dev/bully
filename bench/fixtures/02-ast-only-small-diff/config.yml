@@ -1,0 +1,8 @@
+rules:
+  no-var:
+    description: Prefer let/const over var in TypeScript
+    engine: ast
+    scope: "**/*.ts"
+    severity: warning
+    language: ts
+    pattern: "var $X = $Y"

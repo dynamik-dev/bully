@@ -1,0 +1,9 @@
+rules:
+  no-hardcoded-secrets:
+    description: >
+      Do not hardcode API keys, tokens, passwords, or other secret credentials
+      in source code. Values that look like credentials should be loaded from
+      environment variables or a secret manager.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error

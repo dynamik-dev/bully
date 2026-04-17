@@ -1431,6 +1431,22 @@ def _append_record(log_path: Path, record: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+class _NoopPhaseTimer:
+    """Default phase timer: every call is a no-op context manager."""
+
+    def __call__(self, name: str):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a) -> bool:
+        return False
+
+
+_NOOP_PHASE_TIMER = _NoopPhaseTimer()
+
+
 def run_pipeline(
     config_path: str,
     file_path: str,
@@ -1438,6 +1454,7 @@ def run_pipeline(
     rule_filter: set[str] | None = None,
     *,
     include_skipped: bool = False,
+    phase_timer=_NOOP_PHASE_TIMER,
 ) -> dict:
     """Full two-phase pipeline.
 
@@ -1455,35 +1472,39 @@ def run_pipeline(
     log_path = _telemetry_path(config_path)
 
     # Short-circuit auto-generated files (built-in + user-global + project skip).
-    extra_skip = effective_skip_patterns(config_path)[len(SKIP_PATTERNS) :]
-    if _path_matches_skip(file_path, extra_patterns=extra_skip):
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        result = {"status": "skipped", "file": file_path, "reason": "auto-generated"}
-        if log_path is not None:
-            _append_telemetry(log_path, file_path, "skipped", rule_records, elapsed_ms)
-        return result
+    with phase_timer("skip_check"):
+        extra_skip = effective_skip_patterns(config_path)[len(SKIP_PATTERNS) :]
+        if _path_matches_skip(file_path, extra_patterns=extra_skip):
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            result = {"status": "skipped", "file": file_path, "reason": "auto-generated"}
+            if log_path is not None:
+                _append_telemetry(log_path, file_path, "skipped", rule_records, elapsed_ms)
+            return result
 
     # Trust gate: refuse to execute any rules from an un-reviewed config.
-    trust_status, trust_detail = _trust_status(config_path)
-    if trust_status != "trusted":
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-        result = {
-            "status": "untrusted",
-            "file": file_path,
-            "config": str(Path(config_path).resolve()),
-            "trust_status": trust_status,
-            "trust_detail": trust_detail,
-        }
-        if log_path is not None:
-            _append_telemetry(
-                log_path, file_path, f"untrusted:{trust_status}", rule_records, elapsed_ms
-            )
-        return result
+    with phase_timer("trust_gate"):
+        trust_status, trust_detail = _trust_status(config_path)
+        if trust_status != "trusted":
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            result = {
+                "status": "untrusted",
+                "file": file_path,
+                "config": str(Path(config_path).resolve()),
+                "trust_status": trust_status,
+                "trust_detail": trust_detail,
+            }
+            if log_path is not None:
+                _append_telemetry(
+                    log_path, file_path, f"untrusted:{trust_status}", rule_records, elapsed_ms
+                )
+            return result
 
-    rules = parse_config(config_path)
-    matching = filter_rules(rules, file_path)
-    if rule_filter:
-        matching = [r for r in matching if r.id in rule_filter]
+    with phase_timer("parse_config"):
+        rules = parse_config(config_path)
+    with phase_timer("filter_rules"):
+        matching = filter_rules(rules, file_path)
+        if rule_filter:
+            matching = [r for r in matching if r.id in rule_filter]
 
     def flush(status: str, result: dict) -> dict:
         if log_path is not None:
@@ -1547,67 +1568,70 @@ def run_pipeline(
                 }
             )
 
-    for rule in script_rules:
-        _run_deterministic(
-            rule,
-            lambda r=rule: execute_script_rule(r, file_path, diff),
-            "script",
-        )
-
-    if ast_rules:
-        if ast_grep_available():
-            for rule in ast_rules:
-                _run_deterministic(
-                    rule,
-                    lambda r=rule: execute_ast_rule(r, file_path),
-                    "ast",
-                )
-        else:
-            sys.stderr.write(
-                "bully: engine:ast rules matched but ast-grep not on PATH; skipping. "
-                f"{_AST_GREP_INSTALL_HINT}\n"
+    with phase_timer("script_exec"):
+        for rule in script_rules:
+            _run_deterministic(
+                rule,
+                lambda r=rule: execute_script_rule(r, file_path, diff),
+                "script",
             )
-            for rule in ast_rules:
+
+    with phase_timer("ast_exec"):
+        if ast_rules:
+            if ast_grep_available():
+                for rule in ast_rules:
+                    _run_deterministic(
+                        rule,
+                        lambda r=rule: execute_ast_rule(r, file_path),
+                        "ast",
+                    )
+            else:
+                sys.stderr.write(
+                    "bully: engine:ast rules matched but ast-grep not on PATH; skipping. "
+                    f"{_AST_GREP_INSTALL_HINT}\n"
+                )
+                for rule in ast_rules:
+                    rule_records.append(
+                        {
+                            "id": rule.id,
+                            "engine": "ast",
+                            "verdict": "skipped",
+                            "severity": rule.severity,
+                            "reason": "ast-grep-not-installed",
+                        }
+                    )
+
+    # Can't-match filters for semantic rules.
+    with phase_timer("semantic_build"):
+        dispatched_semantic: list[Rule] = []
+        semantic_skipped: list[dict] = []
+        for rule in semantic_rules:
+            ok, reason = _can_match_diff(rule, diff)
+            if ok:
+                dispatched_semantic.append(rule)
                 rule_records.append(
                     {
                         "id": rule.id,
-                        "engine": "ast",
-                        "verdict": "skipped",
+                        "engine": "semantic",
+                        "verdict": "evaluate_requested",
                         "severity": rule.severity,
-                        "reason": "ast-grep-not-installed",
                     }
                 )
-
-    # Can't-match filters for semantic rules.
-    dispatched_semantic: list[Rule] = []
-    semantic_skipped: list[dict] = []
-    for rule in semantic_rules:
-        ok, reason = _can_match_diff(rule, diff)
-        if ok:
-            dispatched_semantic.append(rule)
-            rule_records.append(
-                {
-                    "id": rule.id,
-                    "engine": "semantic",
-                    "verdict": "evaluate_requested",
-                    "severity": rule.severity,
-                }
-            )
-        else:
-            semantic_skipped.append({"rule": rule.id, "reason": reason})
-            if log_path is not None:
-                _append_record(
-                    log_path,
-                    {
-                        "ts": datetime.now(timezone.utc)
-                        .isoformat(timespec="seconds")
-                        .replace("+00:00", "Z"),
-                        "type": "semantic_skipped",
-                        "file": file_path,
-                        "rule": rule.id,
-                        "reason": reason,
-                    },
-                )
+            else:
+                semantic_skipped.append({"rule": rule.id, "reason": reason})
+                if log_path is not None:
+                    _append_record(
+                        log_path,
+                        {
+                            "ts": datetime.now(timezone.utc)
+                            .isoformat(timespec="seconds")
+                            .replace("+00:00", "Z"),
+                            "type": "semantic_skipped",
+                            "file": file_path,
+                            "rule": rule.id,
+                            "reason": reason,
+                        },
+                    )
 
     blocking = [v for v in all_violations if v.severity == "error"]
 
@@ -2216,6 +2240,13 @@ def _hook_mode() -> int:
 
 
 def main() -> None:
+    # Short-circuit: `bully bench ...` dispatches to the bench CLI directly,
+    # bypassing the main parser (which uses a flat flag model).
+    if len(sys.argv) >= 2 and sys.argv[1] == "bench":
+        from pipeline.bench import main as bench_main
+
+        sys.exit(bench_main(sys.argv[2:]))
+
     args = _parse_args(sys.argv[1:])
 
     # Subcommands.

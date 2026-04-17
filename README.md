@@ -243,3 +243,32 @@ MIT. See [LICENSE](LICENSE).
 ## Contributing
 
 Issues and PRs welcome. Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating, [SECURITY.md](SECURITY.md) for how to report vulnerabilities, and [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## Test Bench
+
+Bully ships with a local bench for watching its own speed and input-token cost over time. Two modes:
+
+### Mode A — fixture suite (regression trend)
+
+```bash
+bully bench                    # run all bench/fixtures/, append to bench/history.jsonl
+bully bench --compare          # diff the last two runs
+bully bench --no-tokens        # skip Anthropic API call, use char-count proxy
+bully bench --json             # emit the raw run record on stdout
+```
+
+Results are written to `bench/history.jsonl`, one line per run. Commit a fresh run alongside changes that touch `pipeline/pipeline.py` to make speed/token impact visible in PRs.
+
+### Mode B — config cost analysis
+
+```bash
+bully bench --config path/to/.bully.yml
+```
+
+Reports the input-token cost of the given config per invocation: floor tokens, per-rule marginal cost (sorted), diff scaling at 1/10/100/1000 added lines, and per-scope grouping. Useful for deciding whether a rule or rule pack earns its keep.
+
+### Real token counts
+
+Both modes use Anthropic's `messages/count_tokens` endpoint when `ANTHROPIC_API_KEY` is set and the optional `anthropic` SDK is installed (`pip install -e ".[bench]"`). Without either, both modes fall back to a `len(json.dumps(payload))` proxy and tag the output `method: proxy`.
+
+The bench does not make real model calls — only `count_tokens`, which is free and does not spend credits.
