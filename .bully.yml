@@ -97,10 +97,12 @@ rules:
 
   ruff-clean:
     description: >
-      Python files must pass `ruff check`. --force-exclude makes ruff
-      respect pyproject's extend-exclude even when a single file is
-      passed, so test fixtures under bench/fixtures/ are skipped.
+      Python files must pass `ruff check`. Requires ruff on PATH (see
+      the `dev` extras in pyproject.toml). When ruff isn't installed the
+      rule passes with a stderr hint rather than blocking edits.
+      --force-exclude makes ruff respect pyproject's extend-exclude so
+      test fixtures under bench/fixtures/ are skipped.
     engine: script
     scope: "*.py"
     severity: error
-    script: "ruff check --force-exclude {file}"
+    script: "command -v ruff >/dev/null 2>&1 || { echo 'bully: ruff not on PATH; pip install -e .[dev]' >&2; exit 0; }; ruff check --force-exclude {file}"
