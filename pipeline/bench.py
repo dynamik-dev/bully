@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,6 +77,68 @@ def discover_fixtures(root: Path) -> list[Fixture]:
             continue
         out.append(load_fixture(child))
     return out
+
+
+BENCH_MODEL = "claude-sonnet-4-6"
+
+
+def _repo_root() -> Path:
+    """Return the project root (directory holding the `agents/` dir).
+
+    Assumes bench.py lives at <root>/pipeline/bench.py.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def _import_anthropic():
+    """Import and return the anthropic module, or None if unavailable."""
+    try:
+        import anthropic  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return anthropic
+
+
+def load_evaluator_system_prompt() -> str:
+    """Load the bully-evaluator system prompt from agents/bully-evaluator.md.
+
+    Strips the YAML frontmatter (everything between the first `---` pair).
+    """
+    path = _repo_root() / "agents" / "bully-evaluator.md"
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        # Find the closing frontmatter delimiter.
+        rest = text[3:]
+        end = rest.find("\n---")
+        if end != -1:
+            text = rest[end + 4 :]  # past "\n---"
+    return text.lstrip("\n")
+
+
+def count_tokens(payload: dict, *, system: str, use_api: bool = True) -> tuple[int, str]:
+    """Count input tokens for the given bully-evaluator payload.
+
+    Returns (token_count, method) where method is 'count_tokens' or 'proxy'.
+
+    Uses the Anthropic `messages/count_tokens` endpoint when
+    ANTHROPIC_API_KEY is set AND the anthropic SDK is importable AND
+    use_api is True. Falls back to `len(json.dumps(payload)) + len(system)`.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    anthropic = _import_anthropic() if use_api else None
+    if use_api and api_key and anthropic is not None:
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.count_tokens(
+                model=BENCH_MODEL,
+                system=system,
+                messages=[{"role": "user", "content": json.dumps(payload)}],
+            )
+            return int(resp.input_tokens), "count_tokens"
+        except Exception:
+            # Any API failure -> proxy. Bench must not crash on transient errors.
+            pass
+    return len(json.dumps(payload)) + len(system), "proxy"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -158,3 +158,78 @@ def test_discover_fixtures_lists_all_subdirs(tmp_path):
         )
     result = discover_fixtures(tmp_path)
     assert [f.name for f in result] == ["alpha", "mu", "zeta"]
+
+
+def test_count_tokens_proxy_when_no_api_key(monkeypatch):
+    """count_tokens falls back to char-count when no API key is present."""
+    from bench import count_tokens
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    payload = {"file": "x.py", "diff": "hello", "evaluate": []}
+    count, method = count_tokens(payload, system="sys prompt")
+    assert method == "proxy"
+    import json as _json
+    assert count == len(_json.dumps(payload)) + len("sys prompt")
+
+
+def test_count_tokens_proxy_when_anthropic_missing(monkeypatch):
+    """If `anthropic` is not importable, fall back to proxy even with key set."""
+    import bench
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(bench, "_import_anthropic", lambda: None)
+
+    payload = {"x": 1}
+    count, method = bench.count_tokens(payload, system="s")
+    assert method == "proxy"
+
+
+def test_count_tokens_api_path(monkeypatch):
+    """With API key + anthropic client, call messages.count_tokens."""
+    import bench
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class FakeResp:
+        input_tokens = 42
+
+    class FakeMessages:
+        def count_tokens(self, **kwargs):
+            assert kwargs["model"] == bench.BENCH_MODEL
+            assert kwargs["system"] == "s"
+            assert "content" in kwargs["messages"][0]
+            return FakeResp()
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.messages = FakeMessages()
+
+    class FakeAnthropic:
+        Anthropic = FakeClient
+
+    monkeypatch.setattr(bench, "_import_anthropic", lambda: FakeAnthropic)
+
+    count, method = bench.count_tokens({"a": 1}, system="s")
+    assert count == 42
+    assert method == "count_tokens"
+
+
+def test_load_evaluator_system_prompt_strips_frontmatter(tmp_path, monkeypatch):
+    """System prompt is read from agents/bully-evaluator.md without frontmatter."""
+    import bench
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "bully-evaluator.md").write_text(
+        "---\n"
+        "name: bully-evaluator\n"
+        "model: sonnet\n"
+        "---\n"
+        "\n"
+        "You are the evaluator. Apply each rule.\n"
+    )
+    monkeypatch.setattr(bench, "_repo_root", lambda: tmp_path)
+
+    text = bench.load_evaluator_system_prompt()
+    assert text.startswith("You are the evaluator")
+    assert "---" not in text
