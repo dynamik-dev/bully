@@ -219,76 +219,83 @@ def run_fixture(
 
     # Bundled fixtures are trusted by construction; short-circuit the trust
     # gate so the bench doesn't require `bully trust` on every fixture
-    # config. Safe because fixtures ship in-repo.
+    # config. Save-and-restore so this doesn't leak to callers that import
+    # the bench as a library.
+    prior_trust = os.environ.get("BULLY_TRUST_ALL")
     os.environ["BULLY_TRUST_ALL"] = "1"
+    try:
+        # Warm run (discarded).
+        pl.run_pipeline(cfg_path, fx.file_path, fx.diff)
 
-    # Warm run (discarded).
-    pl.run_pipeline(cfg_path, fx.file_path, fx.diff)
+        # Timed runs.
+        wall_samples_ns: list[int] = []
+        phase_samples_ns: dict[str, list[int]] = {}
+        for _ in range(iterations):
+            pt = PhaseTimer()
+            t0 = time.perf_counter_ns()
+            pl.run_pipeline(cfg_path, fx.file_path, fx.diff, phase_timer=pt)
+            wall_samples_ns.append(time.perf_counter_ns() - t0)
+            for name, samples in pt.results_ns().items():
+                # Sum of this phase for this iteration (phases may re-enter).
+                phase_samples_ns.setdefault(name, []).append(sum(samples))
 
-    # Timed runs.
-    wall_samples_ns: list[int] = []
-    phase_samples_ns: dict[str, list[int]] = {}
-    for _ in range(iterations):
-        pt = PhaseTimer()
-        t0 = time.perf_counter_ns()
-        pl.run_pipeline(cfg_path, fx.file_path, fx.diff, phase_timer=pt)
-        wall_samples_ns.append(time.perf_counter_ns() - t0)
-        for name, samples in pt.results_ns().items():
-            # Sum of this phase for this iteration (phases may re-enter).
-            phase_samples_ns.setdefault(name, []).append(sum(samples))
+        wall_ms = [ns / 1_000_000 for ns in wall_samples_ns]
+        phases_ms = {
+            name: statistics.median([ns / 1_000_000 for ns in samples])
+            for name, samples in phase_samples_ns.items()
+        }
 
-    wall_ms = [ns / 1_000_000 for ns in wall_samples_ns]
-    phases_ms = {
-        name: statistics.median([ns / 1_000_000 for ns in samples])
-        for name, samples in phase_samples_ns.items()
-    }
+        # Cold-start: one subprocess invocation, wall-clock only. Use the
+        # default CLI path (not --hook-mode) so the subprocess doesn't block
+        # waiting on a Claude Code tool-hook payload.
+        cold_start_ms: float | None = None
+        if not skip_cold_start:
+            pipeline_py = Path(pl.__file__)
+            t0 = time.perf_counter_ns()
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(pipeline_py),
+                    "--config",
+                    cfg_path,
+                    "--file",
+                    fx.file_path,
+                    "--diff",
+                    fx.diff,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            cold_start_ms = (time.perf_counter_ns() - t0) / 1_000_000
 
-    # Cold-start: one subprocess invocation, wall-clock only. Use the
-    # default CLI path (not --hook-mode) so the subprocess doesn't block
-    # waiting on a Claude Code tool-hook payload.
-    cold_start_ms: float | None = None
-    if not skip_cold_start:
-        pipeline_py = Path(pl.__file__)
-        t0 = time.perf_counter_ns()
-        subprocess.run(
-            [
-                sys.executable,
-                str(pipeline_py),
-                "--config",
-                cfg_path,
-                "--file",
-                fx.file_path,
-                "--diff",
-                fx.diff,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        cold_start_ms = (time.perf_counter_ns() - t0) / 1_000_000
+        # Tokens: build the real semantic payload and count. Short-circuit
+        # when no semantic rules match -- a real run wouldn't dispatch at all.
+        rules = pl.parse_config(cfg_path)
+        matching = pl.filter_rules(rules, fx.file_path)
+        passed = [r.id for r in matching if r.engine in ("script", "ast")]
+        semantic = [r for r in matching if r.engine == "semantic"]
+        if semantic:
+            system = load_evaluator_system_prompt()
+            payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
+            tokens, method = count_tokens(payload["_evaluator_input"], system=system, use_api=use_api)
+        else:
+            tokens, method = 0, "n/a-no-semantic-rules"
 
-    # Tokens: build the real semantic payload and count. Short-circuit
-    # when no semantic rules match -- a real run wouldn't dispatch at all.
-    rules = pl.parse_config(cfg_path)
-    matching = pl.filter_rules(rules, fx.file_path)
-    passed = [r.id for r in matching if r.engine in ("script", "ast")]
-    semantic = [r for r in matching if r.engine == "semantic"]
-    if semantic:
-        system = load_evaluator_system_prompt()
-        payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
-        tokens, method = count_tokens(payload["_evaluator_input"], system=system, use_api=use_api)
-    else:
-        tokens, method = 0, "n/a-no-semantic-rules"
-
-    return {
-        "name": fx.name,
-        "description": fx.description,
-        "wall_ms_p50": statistics.median(wall_ms),
-        "wall_ms_p95": _percentile(wall_ms, 95),
-        "phases_ms": phases_ms,
-        "cold_start_ms": cold_start_ms,
-        "tokens": {"input": tokens, "method": method},
-    }
+        return {
+            "name": fx.name,
+            "description": fx.description,
+            "wall_ms_p50": statistics.median(wall_ms),
+            "wall_ms_p95": _percentile(wall_ms, 95),
+            "phases_ms": phases_ms,
+            "cold_start_ms": cold_start_ms,
+            "tokens": {"input": tokens, "method": method},
+        }
+    finally:
+        if prior_trust is None:
+            os.environ.pop("BULLY_TRUST_ALL", None)
+        else:
+            os.environ["BULLY_TRUST_ALL"] = prior_trust
 
 
 def _git_sha() -> str | None:

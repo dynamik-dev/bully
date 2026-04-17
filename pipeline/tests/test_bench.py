@@ -501,6 +501,45 @@ def test_mode_b_errors_when_config_missing(tmp_path, capsys):
     assert "not found" in err.lower()
 
 
+def test_run_fixture_restores_trust_env_var(tmp_path, monkeypatch):
+    """run_fixture must not leak BULLY_TRUST_ALL to the caller's env."""
+    from bench import Fixture, run_fixture
+
+    fx_dir = tmp_path / "fx"
+    fx_dir.mkdir()
+    cfg = fx_dir / "config.yml"
+    cfg.write_text(
+        "rules:\n"
+        "  r:\n"
+        "    description: d\n"
+        "    engine: script\n"
+        "    scope: '**/*.py'\n"
+        "    severity: warning\n"
+        "    script: 'exit 0'\n"
+    )
+    (fx_dir / "fixture.json").write_text(
+        '{"name": "fx", "description": "x", "file_path": "a.py",'
+        ' "edit_type": "Edit", "diff": ""}'
+    )
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BULLY_TRUST_ALL", raising=False)
+
+    fx = Fixture(
+        name="fx",
+        description="x",
+        file_path=str(target),
+        edit_type="Edit",
+        diff="",
+        config_path=cfg,
+    )
+    run_fixture(fx, iterations=1, use_api=False, skip_cold_start=True)
+    # Env var was absent before the call; it must be absent after.
+    import os as _os
+    assert "BULLY_TRUST_ALL" not in _os.environ
+
+
 def test_real_fixtures_complete_successfully(tmp_path, monkeypatch):
     """All authored fixtures under bench/fixtures/ run without errors."""
     import json as _json
