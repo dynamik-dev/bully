@@ -278,7 +278,9 @@ def run_fixture(
         if semantic:
             system = load_evaluator_system_prompt()
             payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
-            tokens, method = count_tokens(payload["_evaluator_input"], system=system, use_api=use_api)
+            tokens, method = count_tokens(
+                payload["_evaluator_input"], system=system, use_api=use_api
+            )
         else:
             tokens, method = 0, "n/a-no-semantic-rules"
 

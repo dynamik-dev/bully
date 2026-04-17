@@ -518,8 +518,7 @@ def test_run_fixture_restores_trust_env_var(tmp_path, monkeypatch):
         "    script: 'exit 0'\n"
     )
     (fx_dir / "fixture.json").write_text(
-        '{"name": "fx", "description": "x", "file_path": "a.py",'
-        ' "edit_type": "Edit", "diff": ""}'
+        '{"name": "fx", "description": "x", "file_path": "a.py", "edit_type": "Edit", "diff": ""}'
     )
     target = tmp_path / "a.py"
     target.write_text("x = 1\n")
@@ -537,6 +536,7 @@ def test_run_fixture_restores_trust_env_var(tmp_path, monkeypatch):
     run_fixture(fx, iterations=1, use_api=False, skip_cold_start=True)
     # Env var was absent before the call; it must be absent after.
     import os as _os
+
     assert "BULLY_TRUST_ALL" not in _os.environ
 
 
@@ -545,8 +545,7 @@ def test_bench_config_and_compare_are_mutually_exclusive():
     import subprocess
 
     result = subprocess.run(
-        [sys.executable, "-m", "pipeline.pipeline", "bench",
-         "--config", "foo.yml", "--compare"],
+        [sys.executable, "-m", "pipeline.pipeline", "bench", "--config", "foo.yml", "--compare"],
         capture_output=True,
         text=True,
     )
