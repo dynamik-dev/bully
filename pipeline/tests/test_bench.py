@@ -89,3 +89,72 @@ def test_bench_module_imports():
     import bench
 
     assert hasattr(bench, "main")
+
+
+def test_load_fixture_reads_config_and_metadata(tmp_path):
+    """load_fixture returns a Fixture with config_path + metadata."""
+    from bench import load_fixture
+
+    fx_dir = tmp_path / "my-fixture"
+    fx_dir.mkdir()
+    (fx_dir / "config.yml").write_text(
+        "rules:\n"
+        "  r1:\n"
+        "    description: d\n"
+        "    engine: script\n"
+        "    scope: '**/*.py'\n"
+        "    severity: warning\n"
+        "    script: 'exit 0'\n"
+    )
+    (fx_dir / "fixture.json").write_text(
+        '{"name": "my-fixture", "description": "x", '
+        '"file_path": "src/a.py", "edit_type": "Edit", "diff": "--- a\\n"}'
+    )
+    fx = load_fixture(fx_dir)
+    assert fx.name == "my-fixture"
+    assert fx.file_path == "src/a.py"
+    assert fx.edit_type == "Edit"
+    assert fx.diff.startswith("--- a")
+    assert fx.config_path.name == "config.yml"
+    assert fx.config_path.exists()
+
+
+def test_load_fixture_rejects_missing_files(tmp_path):
+    """load_fixture raises when either expected file is missing."""
+    import pytest
+    from bench import FixtureError, load_fixture
+
+    fx_dir = tmp_path / "bad"
+    fx_dir.mkdir()
+    # Missing both files.
+    with pytest.raises(FixtureError, match="config.yml"):
+        load_fixture(fx_dir)
+
+
+def test_load_fixture_rejects_malformed_json(tmp_path):
+    """load_fixture raises a clear error on malformed metadata JSON."""
+    import pytest
+    from bench import FixtureError, load_fixture
+
+    fx_dir = tmp_path / "bad-json"
+    fx_dir.mkdir()
+    (fx_dir / "config.yml").write_text("rules: {}\n")
+    (fx_dir / "fixture.json").write_text("{not json")
+    with pytest.raises(FixtureError, match="fixture.json"):
+        load_fixture(fx_dir)
+
+
+def test_discover_fixtures_lists_all_subdirs(tmp_path):
+    """discover_fixtures returns a sorted list of fixture directories."""
+    from bench import discover_fixtures
+
+    for name in ["zeta", "alpha", "mu"]:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "config.yml").write_text("rules: {}\n")
+        (d / "fixture.json").write_text(
+            '{"name": "' + name + '", "description": "", '
+            '"file_path": "a.py", "edit_type": "Edit", "diff": ""}'
+        )
+    result = discover_fixtures(tmp_path)
+    assert [f.name for f in result] == ["alpha", "mu", "zeta"]
