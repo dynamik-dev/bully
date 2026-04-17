@@ -94,3 +94,13 @@ rules:
     scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
     severity: error
     pattern: "subprocess.run($$$, shell=True, $$$)"
+
+  ruff-clean:
+    description: >
+      Python files must pass `ruff check`. --force-exclude makes ruff
+      respect pyproject's extend-exclude even when a single file is
+      passed, so test fixtures under bench/fixtures/ are skipped.
+    engine: script
+    scope: "*.py"
+    severity: error
+    script: "ruff check --force-exclude {file}"
