@@ -86,6 +86,11 @@ def discover_fixtures(root: Path) -> list[Fixture]:
 
 BENCH_MODEL = "claude-sonnet-4-6"
 
+# USD per million tokens (Sonnet 4.6). Used to render the --full summary's
+# cost column. Bump alongside any BENCH_MODEL change.
+BENCH_INPUT_PRICE_PER_MTOK = 3.0
+BENCH_OUTPUT_PRICE_PER_MTOK = 15.0
+
 
 def _repo_root() -> Path:
     """Return the project root (directory holding the `agents/` dir).
@@ -146,6 +151,44 @@ def count_tokens(payload: dict, *, system: str, use_api: bool = True) -> tuple[i
     return len(json.dumps(payload)) + len(system), "proxy"
 
 
+def full_dispatch(payload: dict, *, system: str, max_tokens: int = 1024) -> tuple[int, int, str]:
+    """Make a real `messages.create` call to capture input + output tokens.
+
+    Returns (input_tokens, output_tokens, method) where method is 'full'
+    on a real round-trip. Falls back to count_tokens for input and
+    `output_tokens=0` if the API call can't be made (no key, no SDK, or
+    transient failure). Method in the fallback case is whatever
+    count_tokens returned ('count_tokens' or 'proxy').
+
+    Real model cost is paid each call -- use sparingly (e.g. one bench
+    run for calibration, not per-edit).
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    anthropic = _import_anthropic()
+    if api_key and anthropic is not None:
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=BENCH_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": json.dumps(payload)}],
+            )
+            return int(resp.usage.input_tokens), int(resp.usage.output_tokens), "full"
+        except Exception:
+            pass
+    tokens, method = count_tokens(payload, system=system, use_api=True)
+    return tokens, 0, method
+
+
+def _estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
+    """Rough USD cost using BENCH_*_PRICE_PER_MTOK constants."""
+    return (
+        input_tokens * BENCH_INPUT_PRICE_PER_MTOK / 1_000_000
+        + output_tokens * BENCH_OUTPUT_PRICE_PER_MTOK / 1_000_000
+    )
+
+
 class PhaseTimer:
     """Callable that records elapsed time for each named phase.
 
@@ -200,10 +243,15 @@ def run_fixture(
     iterations: int = 5,
     use_api: bool = True,
     skip_cold_start: bool = False,
+    full: bool = False,
 ) -> dict:
     """Run one fixture: warm + N timed + cold-start + token count.
 
     Returns a per-fixture result dict suitable for the history JSONL.
+
+    When `full=True` and the Anthropic SDK + API key are available, makes
+    one real `messages.create` round-trip per fixture to capture real
+    output tokens. Costs actual model spend -- use for calibration runs.
     """
     # Import here to avoid circular import at module load.
     # When bench runs as pipeline.bench (package context), `import pipeline`
@@ -278,11 +326,23 @@ def run_fixture(
         if semantic:
             system = load_evaluator_system_prompt()
             payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
-            tokens, method = count_tokens(
-                payload["_evaluator_input"], system=system, use_api=use_api
-            )
+            if full:
+                input_tokens, output_tokens, method = full_dispatch(
+                    payload["_evaluator_input"], system=system
+                )
+                tokens_record = {
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "method": method,
+                    "cost_usd": _estimate_cost_usd(input_tokens, output_tokens),
+                }
+            else:
+                input_tokens, method = count_tokens(
+                    payload["_evaluator_input"], system=system, use_api=use_api
+                )
+                tokens_record = {"input": input_tokens, "method": method}
         else:
-            tokens, method = 0, "n/a-no-semantic-rules"
+            tokens_record = {"input": 0, "method": "n/a-no-semantic-rules"}
 
         return {
             "name": fx.name,
@@ -291,7 +351,7 @@ def run_fixture(
             "wall_ms_p95": _percentile(wall_ms, 95),
             "phases_ms": phases_ms,
             "cold_start_ms": cold_start_ms,
-            "tokens": {"input": tokens, "method": method},
+            "tokens": tokens_record,
         }
     finally:
         if prior_trust is None:
@@ -343,8 +403,14 @@ def run_mode_a(
     iterations: int = 5,
     skip_cold_start: bool = False,
     emit_json: bool = False,
+    full: bool = False,
 ) -> int:
-    """Run every fixture in `fixtures_dir`, append a record to `history_path`."""
+    """Run every fixture in `fixtures_dir`, append a record to `history_path`.
+
+    When `full=True`, each fixture's semantic payload triggers a real
+    Anthropic `messages.create` call so the record carries real output
+    tokens (and a per-fixture `cost_usd` estimate). Costs real money.
+    """
     fixtures = discover_fixtures(fixtures_dir)
     if not fixtures:
         sys.stderr.write(f"bench: no fixtures found in {fixtures_dir}\n")
@@ -358,14 +424,26 @@ def run_mode_a(
                 iterations=iterations,
                 use_api=use_api,
                 skip_cold_start=skip_cold_start,
+                full=full,
             )
         )
 
     total_wall = sum(r["wall_ms_p50"] for r in results)
     cold_vals = [r["cold_start_ms"] for r in results if r.get("cold_start_ms") is not None]
     total_cold = sum(cold_vals) if cold_vals else None
-    total_tokens = sum(r["tokens"]["input"] for r in results)
+    total_input_tokens = sum(r["tokens"]["input"] for r in results)
+    total_output_tokens = sum(r["tokens"].get("output", 0) for r in results)
+    total_cost_usd = sum(r["tokens"].get("cost_usd", 0.0) for r in results)
     methods = {r["tokens"]["method"] for r in results if r["tokens"]["input"]}
+    aggregates = {
+        "total_wall_ms_p50": total_wall,
+        "total_cold_start_ms": total_cold,
+        "total_input_tokens": total_input_tokens,
+        "tokens_method": next(iter(methods)) if len(methods) == 1 else "mixed",
+    }
+    if full:
+        aggregates["total_output_tokens"] = total_output_tokens
+        aggregates["total_cost_usd"] = total_cost_usd
     record = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "git_sha": _git_sha(),
@@ -374,12 +452,7 @@ def run_mode_a(
         "anthropic_sdk_version": _anthropic_sdk_version(),
         "machine": f"{platform.system().lower()}-{platform.release()}",
         "fixtures": results,
-        "aggregates": {
-            "total_wall_ms_p50": total_wall,
-            "total_cold_start_ms": total_cold,
-            "total_input_tokens": total_tokens,
-            "tokens_method": next(iter(methods)) if len(methods) == 1 else "mixed",
-        },
+        "aggregates": aggregates,
     }
     history_path.parent.mkdir(parents=True, exist_ok=True)
     with history_path.open("a", encoding="utf-8") as f:
@@ -397,21 +470,41 @@ def _print_mode_a_summary(record: dict) -> None:
     print(f"bench run @ {record['ts']}  (sha={record['git_sha'] or '?'})")
     print(f"  python={record['python_version']}  machine={record['machine']}")
     print()
-    print(f"  {'fixture':<32} {'wall_p50_ms':>12} {'cold_ms':>10} {'tokens':>9}  method")
+    is_full = "total_cost_usd" in record["aggregates"]
+    if is_full:
+        header = (
+            f"  {'fixture':<32} {'wall_p50_ms':>12} {'cold_ms':>10} "
+            f"{'in_tok':>8} {'out_tok':>8} {'cost_usd':>10}  method"
+        )
+    else:
+        header = f"  {'fixture':<32} {'wall_p50_ms':>12} {'cold_ms':>10} {'tokens':>9}  method"
+    print(header)
     for r in record["fixtures"]:
         cold = r.get("cold_start_ms")
         cold_str = f"{cold:.1f}" if isinstance(cold, (int, float)) else "-"
-        print(
-            f"  {r['name']:<32} {r['wall_ms_p50']:>12.2f} {cold_str:>10} "
-            f"{r['tokens']['input']:>9}  {r['tokens']['method']}"
-        )
+        tok = r["tokens"]
+        if is_full:
+            out_tok = tok.get("output", 0)
+            cost = tok.get("cost_usd", 0.0)
+            print(
+                f"  {r['name']:<32} {r['wall_ms_p50']:>12.2f} {cold_str:>10} "
+                f"{tok['input']:>8} {out_tok:>8} {cost:>10.4f}  {tok['method']}"
+            )
+        else:
+            print(
+                f"  {r['name']:<32} {r['wall_ms_p50']:>12.2f} {cold_str:>10} "
+                f"{tok['input']:>9}  {tok['method']}"
+            )
     agg = record["aggregates"]
     print()
-    print(
+    line = (
         f"  totals: wall_p50={agg['total_wall_ms_p50']:.1f}ms  "
         f"cold={agg['total_cold_start_ms'] or 0:.1f}ms  "
         f"tokens={agg['total_input_tokens']} ({agg['tokens_method']})"
     )
+    if is_full:
+        line += f"  output={agg['total_output_tokens']}  cost=${agg['total_cost_usd']:.4f}"
+    print(line)
 
 
 def run_compare(*, history_path: Path) -> int:
@@ -594,6 +687,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Skip Anthropic API call; use char-count proxy for token counts.",
     )
     parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Mode A only: make one real Anthropic messages.create per fixture "
+            "to capture real output tokens + dollar cost. Costs real money."
+        ),
+    )
+    parser.add_argument(
         "--fixtures-dir",
         default="bench/fixtures",
         help="Directory of fixture subdirectories (default: bench/fixtures).",
@@ -620,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
         history_path=Path(args.history),
         use_api=not args.no_tokens,
         emit_json=args.json,
+        full=args.full,
     )
 
 

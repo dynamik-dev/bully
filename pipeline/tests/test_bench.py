@@ -585,3 +585,162 @@ def test_real_fixtures_complete_successfully(tmp_path, monkeypatch):
     # Auto-generated skip fixture should short-circuit (wall time near zero).
     skip_fx = next(f for f in record["fixtures"] if "auto-generated-skip" in f["name"])
     assert skip_fx["wall_ms_p50"] < 10.0
+
+
+def test_full_dispatch_real_api_path(monkeypatch):
+    """full_dispatch calls messages.create and returns (input, output, 'full')."""
+    import bench
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class FakeUsage:
+        input_tokens = 1200
+        output_tokens = 85
+
+    class FakeResp:
+        usage = FakeUsage()
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            assert kwargs["model"] == bench.BENCH_MODEL
+            assert kwargs["max_tokens"] == 1024
+            assert kwargs["system"] == "s"
+            return FakeResp()
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.messages = FakeMessages()
+
+    class FakeAnthropic:
+        Anthropic = FakeClient
+
+    monkeypatch.setattr(bench, "_import_anthropic", lambda: FakeAnthropic)
+
+    input_tok, output_tok, method = bench.full_dispatch({"a": 1}, system="s")
+    assert input_tok == 1200
+    assert output_tok == 85
+    assert method == "full"
+
+
+def test_full_dispatch_falls_back_to_count_tokens_on_failure(monkeypatch):
+    """Any exception from messages.create falls back to (count_tokens, 0, method)."""
+    import bench
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(bench, "_import_anthropic", lambda: None)
+
+    input_tok, output_tok, method = bench.full_dispatch({"a": 1}, system="s")
+    assert output_tok == 0
+    assert method == "proxy"
+    # Proxy = len(json.dumps(payload)) + len(system)
+    import json as _json
+
+    assert input_tok == len(_json.dumps({"a": 1})) + len("s")
+
+
+def test_estimate_cost_usd_matches_pricing_constants():
+    """_estimate_cost_usd uses the published per-million rates."""
+    import bench
+
+    # 1M input + 1M output should sum the two constants.
+    cost = bench._estimate_cost_usd(1_000_000, 1_000_000)
+    assert cost == bench.BENCH_INPUT_PRICE_PER_MTOK + bench.BENCH_OUTPUT_PRICE_PER_MTOK
+
+
+def test_run_fixture_full_mode_captures_output_and_cost(tmp_path, monkeypatch):
+    """run_fixture(full=True) records input + output + cost_usd."""
+    import bench
+    from bench import Fixture, run_fixture
+
+    fx_dir = tmp_path / "fx"
+    fx_dir.mkdir()
+    cfg = fx_dir / "config.yml"
+    cfg.write_text(
+        "rules:\n"
+        "  sem:\n"
+        "    description: a semantic rule\n"
+        "    engine: semantic\n"
+        "    scope: '**/*.py'\n"
+        "    severity: warning\n"
+    )
+    (fx_dir / "fixture.json").write_text(
+        '{"name": "fx", "description": "x", "file_path": "a.py", "edit_type": "Edit", "diff": ""}'
+    )
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+
+    # Stub full_dispatch so the test doesn't hit the real API.
+    monkeypatch.setattr(
+        bench,
+        "full_dispatch",
+        lambda payload, *, system, max_tokens=1024: (1500, 100, "full"),
+    )
+
+    fx = Fixture(
+        name="fx",
+        description="x",
+        file_path=str(target),
+        edit_type="Edit",
+        diff="",
+        config_path=cfg,
+    )
+    result = run_fixture(fx, iterations=2, skip_cold_start=True, full=True)
+    assert result["tokens"]["method"] == "full"
+    assert result["tokens"]["input"] == 1500
+    assert result["tokens"]["output"] == 100
+    # cost = 1500 * 3/M + 100 * 15/M
+    expected = 1500 * 3.0 / 1_000_000 + 100 * 15.0 / 1_000_000
+    assert abs(result["tokens"]["cost_usd"] - expected) < 1e-12
+
+
+def test_run_mode_a_full_mode_aggregates_output_and_cost(tmp_path, monkeypatch):
+    """run_mode_a(full=True) aggregates output tokens + cost_usd."""
+    import json as _json
+
+    import bench
+    from bench import run_mode_a
+
+    fixtures_root = tmp_path / "fixtures"
+    for name in ("a", "b"):
+        d = fixtures_root / name
+        d.mkdir(parents=True)
+        (d / "config.yml").write_text(
+            "rules:\n"
+            "  sem:\n"
+            "    description: d\n"
+            "    engine: semantic\n"
+            "    scope: '*.py'\n"
+            "    severity: warning\n"
+        )
+        (d / "fixture.json").write_text(
+            '{"name": "' + name + '", "description": "x",'
+            ' "file_path": "x.py", "edit_type": "Edit", "diff": ""}'
+        )
+    (tmp_path / "x.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(
+        bench,
+        "full_dispatch",
+        lambda payload, *, system, max_tokens=1024: (500, 50, "full"),
+    )
+
+    history_path = tmp_path / "history.jsonl"
+    rc = run_mode_a(
+        fixtures_dir=fixtures_root,
+        history_path=history_path,
+        iterations=2,
+        skip_cold_start=True,
+        full=True,
+        emit_json=True,
+    )
+    assert rc == 0
+    record = _json.loads(history_path.read_text().strip().splitlines()[-1])
+    agg = record["aggregates"]
+    assert agg["total_input_tokens"] == 1000
+    assert agg["total_output_tokens"] == 100
+    assert agg["tokens_method"] == "full"
+    # 1000 * 3/M + 100 * 15/M
+    expected = 1000 * 3.0 / 1_000_000 + 100 * 15.0 / 1_000_000
+    assert abs(agg["total_cost_usd"] - expected) < 1e-12
