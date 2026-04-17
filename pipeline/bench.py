@@ -254,13 +254,14 @@ def run_fixture(
         )
         cold_start_ms = (time.perf_counter_ns() - t0) / 1_000_000
 
-    # Tokens: build the real semantic payload and count.
+    # Tokens: build the real semantic payload and count. Short-circuit
+    # when no semantic rules match -- a real run wouldn't dispatch at all.
     rules = pl.parse_config(cfg_path)
     matching = pl.filter_rules(rules, fx.file_path)
     passed = [r.id for r in matching if r.engine in ("script", "ast")]
     semantic = [r for r in matching if r.engine == "semantic"]
-    system = load_evaluator_system_prompt()
     if semantic:
+        system = load_evaluator_system_prompt()
         payload = pl.build_semantic_payload(
             fx.file_path, fx.diff, passed, semantic
         )
@@ -268,7 +269,7 @@ def run_fixture(
             payload["_evaluator_input"], system=system, use_api=use_api
         )
     else:
-        tokens, method = count_tokens({}, system=system, use_api=use_api)
+        tokens, method = 0, "n/a-no-semantic-rules"
 
     return {
         "name": fx.name,

@@ -297,4 +297,5 @@ def test_run_fixture_returns_structured_result(tmp_path, monkeypatch):
     assert "phases_ms" in result
     assert "skip_check" in result["phases_ms"]
     assert "parse_config" in result["phases_ms"]
-    assert result["tokens"]["method"] == "proxy"
+    assert result["tokens"]["method"] == "n/a-no-semantic-rules"
+    assert result["tokens"]["input"] == 0
