@@ -1,0 +1,19 @@
+rules:
+  no-print:
+    description: Disallow bare print() in production Python code
+    engine: script
+    scope: "**/*.py"
+    severity: warning
+    script: "grep -n 'print(' {file} && exit 1 || exit 0"
+  no-eval:
+    description: Disallow eval() usage
+    engine: ast
+    scope: "**/*.py"
+    severity: error
+    language: python
+    pattern: "eval($X)"
+  no-hardcoded-secrets:
+    description: Do not hardcode API keys, tokens, or passwords.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error

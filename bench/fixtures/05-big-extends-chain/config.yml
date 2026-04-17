@@ -1,0 +1,8 @@
+extends: ["./parent.yml"]
+rules:
+  local-rule:
+    description: A rule defined at the leaf
+    engine: script
+    scope: "**/*.py"
+    severity: warning
+    script: "exit 0"

@@ -1,0 +1,7 @@
+rules:
+  noop:
+    description: A rule that should never be evaluated because skip shortcircuits first
+    engine: script
+    scope: "**/*.js"
+    severity: warning
+    script: "exit 0"

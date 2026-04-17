@@ -1,0 +1,8 @@
+extends: ["./grandparent.yml"]
+rules:
+  parent-rule:
+    description: A rule defined two levels up
+    engine: script
+    scope: "**/*.py"
+    severity: warning
+    script: "exit 0"

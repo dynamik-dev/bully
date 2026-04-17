@@ -1,0 +1,6 @@
+rules:
+  no-hardcoded-secrets:
+    description: Do not hardcode API keys, tokens, or passwords.
+    engine: semantic
+    scope: "**/*.py"
+    severity: error

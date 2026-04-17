@@ -1,0 +1,7 @@
+{
+  "name": "03-semantic-only-small-diff",
+  "description": "One semantic rule, small Python edit (no violation)",
+  "file_path": "bench/fixtures/03-semantic-only-small-diff/target.py",
+  "edit_type": "Edit",
+  "diff": "--- a/target.py\n+++ b/target.py\n@@ -1,2 +1,3 @@\n def main():\n+    api_url = 'https://example.com'\n     pass\n"
+}

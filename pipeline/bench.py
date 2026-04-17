@@ -206,7 +206,14 @@ def run_fixture(
     Returns a per-fixture result dict suitable for the history JSONL.
     """
     # Import here to avoid circular import at module load.
-    import pipeline as pl
+    # When bench runs as pipeline.bench (package context), `import pipeline`
+    # imports the package (empty __init__). Fall back to the submodule.
+    import pipeline as _pl_pkg
+
+    if hasattr(_pl_pkg, "run_pipeline"):
+        pl = _pl_pkg
+    else:
+        import pipeline.pipeline as pl  # type: ignore[no-redef]
 
     cfg_path = str(fx.config_path)
 
@@ -245,10 +252,14 @@ def run_fixture(
         t0 = time.perf_counter_ns()
         subprocess.run(
             [
-                sys.executable, str(pipeline_py),
-                "--config", cfg_path,
-                "--file", fx.file_path,
-                "--diff", fx.diff,
+                sys.executable,
+                str(pipeline_py),
+                "--config",
+                cfg_path,
+                "--file",
+                fx.file_path,
+                "--diff",
+                fx.diff,
             ],
             capture_output=True,
             text=True,
@@ -264,12 +275,8 @@ def run_fixture(
     semantic = [r for r in matching if r.engine == "semantic"]
     if semantic:
         system = load_evaluator_system_prompt()
-        payload = pl.build_semantic_payload(
-            fx.file_path, fx.diff, passed, semantic
-        )
-        tokens, method = count_tokens(
-            payload["_evaluator_input"], system=system, use_api=use_api
-        )
+        payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
+        tokens, method = count_tokens(payload["_evaluator_input"], system=system, use_api=use_api)
     else:
         tokens, method = 0, "n/a-no-semantic-rules"
 
@@ -351,9 +358,7 @@ def run_mode_a(
     total_tokens = sum(r["tokens"]["input"] for r in results)
     methods = {r["tokens"]["method"] for r in results if r["tokens"]["input"]}
     record = {
-        "ts": datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "git_sha": _git_sha(),
         "git_dirty": _git_dirty(),
         "python_version": platform.python_version(),
@@ -383,10 +388,7 @@ def _print_mode_a_summary(record: dict) -> None:
     print(f"bench run @ {record['ts']}  (sha={record['git_sha'] or '?'})")
     print(f"  python={record['python_version']}  machine={record['machine']}")
     print()
-    print(
-        f"  {'fixture':<32} {'wall_p50_ms':>12} {'cold_ms':>10} "
-        f"{'tokens':>9}  method"
-    )
+    print(f"  {'fixture':<32} {'wall_p50_ms':>12} {'cold_ms':>10} {'tokens':>9}  method")
     for r in record["fixtures"]:
         cold = r.get("cold_start_ms")
         cold_str = f"{cold:.1f}" if isinstance(cold, (int, float)) else "-"
@@ -414,16 +416,11 @@ def run_compare(*, history_path: Path) -> int:
         if line.strip()
     ]
     if len(lines) < 2:
-        sys.stderr.write(
-            "bench: --compare needs at least two runs in history\n"
-        )
+        sys.stderr.write("bench: --compare needs at least two runs in history\n")
         return 1
 
     older, newer = lines[-2], lines[-1]
-    print(
-        f"comparing {older.get('git_sha') or '?'} -> "
-        f"{newer.get('git_sha') or '?'}"
-    )
+    print(f"comparing {older.get('git_sha') or '?'} -> {newer.get('git_sha') or '?'}")
     print(f"  {older['ts']}  ->  {newer['ts']}")
     print()
 
@@ -436,21 +433,15 @@ def run_compare(*, history_path: Path) -> int:
         new_fx = fx_by_name.get(name, {})
         old_fx = old_by_name.get(name, {})
         dw = new_fx.get("wall_ms_p50", 0) - old_fx.get("wall_ms_p50", 0)
-        dt = new_fx.get("tokens", {}).get("input", 0) - old_fx.get(
-            "tokens", {}
-        ).get("input", 0)
+        dt = new_fx.get("tokens", {}).get("input", 0) - old_fx.get("tokens", {}).get("input", 0)
         sign_w = "+" if dw >= 0 else ""
         sign_t = "+" if dt >= 0 else ""
         print(f"  {name:<32} {sign_w}{dw:>13.2f} {sign_t}{dt:>13}")
 
     agg_new = newer.get("aggregates", {})
     agg_old = older.get("aggregates", {})
-    dw_tot = agg_new.get("total_wall_ms_p50", 0) - agg_old.get(
-        "total_wall_ms_p50", 0
-    )
-    dt_tot = agg_new.get("total_input_tokens", 0) - agg_old.get(
-        "total_input_tokens", 0
-    )
+    dw_tot = agg_new.get("total_wall_ms_p50", 0) - agg_old.get("total_wall_ms_p50", 0)
+    dt_tot = agg_new.get("total_input_tokens", 0) - agg_old.get("total_input_tokens", 0)
     print()
     print(f"  totals: wall_delta={dw_tot:+.2f}ms  tokens_delta={dt_tot:+}")
     return 0
@@ -459,12 +450,7 @@ def run_compare(*, history_path: Path) -> int:
 def _synth_diff(added_lines: int, file_path: str = "src/synth.py") -> str:
     """Build a unified diff that adds `added_lines` new lines to a file."""
     body = "".join(f"+line_{i}\n" for i in range(added_lines))
-    return (
-        f"--- a/{file_path}\n"
-        f"+++ b/{file_path}\n"
-        f"@@ -0,0 +1,{added_lines} @@\n"
-        + body
-    )
+    return f"--- a/{file_path}\n+++ b/{file_path}\n@@ -0,0 +1,{added_lines} @@\n" + body
 
 
 def run_mode_b(
@@ -477,7 +463,12 @@ def run_mode_b(
 
     Returns {"returncode": int, "report": {...} | None}.
     """
-    import pipeline as pl
+    import pipeline as _pl_pkg
+
+    if hasattr(_pl_pkg, "run_pipeline"):
+        pl = _pl_pkg
+    else:
+        import pipeline.pipeline as pl  # type: ignore[no-redef]
 
     if not config_path.is_file():
         sys.stderr.write(f"bench: config not found: {config_path}\n")
@@ -494,26 +485,17 @@ def run_mode_b(
     system = load_evaluator_system_prompt()
 
     example_file = "src/example.py"
-    floor_payload = pl.build_semantic_payload(
-        example_file, "", [], []
-    )["_evaluator_input"]
+    floor_payload = pl.build_semantic_payload(example_file, "", [], [])["_evaluator_input"]
     if not semantic_rules:
         floor_tokens, method = 0, "n/a-no-semantic-rules"
     else:
-        floor_tokens, method = count_tokens(
-            floor_payload, system=system, use_api=use_api
-        )
+        floor_tokens, method = count_tokens(floor_payload, system=system, use_api=use_api)
 
     per_rule: list[dict] = []
     for r in semantic_rules:
-        payload = pl.build_semantic_payload(
-            example_file, "", [], [r]
-        )["_evaluator_input"]
+        payload = pl.build_semantic_payload(example_file, "", [], [r])["_evaluator_input"]
         tokens, _ = count_tokens(payload, system=system, use_api=use_api)
-        per_rule.append(
-            {"id": r.id, "description": r.description,
-             "tokens": tokens - floor_tokens}
-        )
+        per_rule.append({"id": r.id, "description": r.description, "tokens": tokens - floor_tokens})
     per_rule.sort(key=lambda x: x["tokens"], reverse=True)
 
     diff_scaling: list[dict] = []
@@ -526,9 +508,7 @@ def run_mode_b(
 
     scopes: dict[str, int] = {}
     for r in semantic_rules:
-        payload = pl.build_semantic_payload(
-            example_file, "", [], [r]
-        )["_evaluator_input"]
+        payload = pl.build_semantic_payload(example_file, "", [], [r])["_evaluator_input"]
         tokens, _ = count_tokens(payload, system=system, use_api=use_api)
         for glob in r.scope:
             scopes[glob] = scopes.get(glob, 0) + (tokens - floor_tokens)
@@ -545,9 +525,7 @@ def run_mode_b(
         "per_rule": per_rule,
         "diff_scaling": diff_scaling,
         "scope_groups": scope_rows,
-        "deterministic_rules": [
-            {"id": r.id, "engine": r.engine} for r in deterministic
-        ],
+        "deterministic_rules": [{"id": r.id, "engine": r.engine} for r in deterministic],
     }
     if emit_json:
         print(json.dumps(report, indent=2))

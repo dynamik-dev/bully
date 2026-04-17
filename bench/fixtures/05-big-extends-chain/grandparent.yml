@@ -1,0 +1,7 @@
+rules:
+  grandparent-rule:
+    description: A rule defined three levels up the extends chain
+    engine: script
+    scope: "**/*.py"
+    severity: warning
+    script: "exit 0"

@@ -1,0 +1,7 @@
+{
+  "name": "08-auto-generated-skip",
+  "description": "File matches SKIP_PATTERNS (*.min.js); pipeline should short-circuit",
+  "file_path": "bench/fixtures/08-auto-generated-skip/bundle.min.js",
+  "edit_type": "Edit",
+  "diff": "--- a/bundle.min.js\n+++ b/bundle.min.js\n@@ -1 +1 @@\n-var a=1\n+var a=2\n"
+}

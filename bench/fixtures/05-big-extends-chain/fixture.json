@@ -1,0 +1,7 @@
+{
+  "name": "05-big-extends-chain",
+  "description": "Three-level extends chain; stresses parser + skip walker",
+  "file_path": "bench/fixtures/05-big-extends-chain/target.py",
+  "edit_type": "Edit",
+  "diff": "--- a/target.py\n+++ b/target.py\n@@ -1 +1,2 @@\n+x = 1\n y = 2\n"
+}

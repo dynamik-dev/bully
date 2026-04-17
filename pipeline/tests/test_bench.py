@@ -122,6 +122,7 @@ def test_load_fixture_reads_config_and_metadata(tmp_path):
 def test_load_fixture_rejects_missing_files(tmp_path):
     """load_fixture raises when either expected file is missing."""
     import pytest
+
     from bench import FixtureError, load_fixture
 
     fx_dir = tmp_path / "bad"
@@ -134,6 +135,7 @@ def test_load_fixture_rejects_missing_files(tmp_path):
 def test_load_fixture_rejects_malformed_json(tmp_path):
     """load_fixture raises a clear error on malformed metadata JSON."""
     import pytest
+
     from bench import FixtureError, load_fixture
 
     fx_dir = tmp_path / "bad-json"
@@ -169,6 +171,7 @@ def test_count_tokens_proxy_when_no_api_key(monkeypatch):
     count, method = count_tokens(payload, system="sys prompt")
     assert method == "proxy"
     import json as _json
+
     assert count == len(_json.dumps(payload)) + len("sys prompt")
 
 
@@ -273,8 +276,7 @@ def test_run_fixture_returns_structured_result(tmp_path, monkeypatch):
         "    script: 'exit 0'\n"
     )
     (fx_dir / "fixture.json").write_text(
-        '{"name": "fx", "description": "x", "file_path": "a.py",'
-        ' "edit_type": "Edit", "diff": ""}'
+        '{"name": "fx", "description": "x", "file_path": "a.py", "edit_type": "Edit", "diff": ""}'
     )
     target = tmp_path / "a.py"
     target.write_text("x = 1\n")
@@ -377,8 +379,7 @@ def test_compare_reports_deltas_between_last_two_runs(tmp_path, capsys):
         "ts": "2026-04-15T10:00:00Z",
         "git_sha": "aaa",
         "fixtures": [
-            {"name": "a", "wall_ms_p50": 10.0, "tokens": {"input": 100,
-                "method": "count_tokens"}},
+            {"name": "a", "wall_ms_p50": 10.0, "tokens": {"input": 100, "method": "count_tokens"}},
         ],
         "aggregates": {
             "total_wall_ms_p50": 10.0,
@@ -389,8 +390,7 @@ def test_compare_reports_deltas_between_last_two_runs(tmp_path, capsys):
         "ts": "2026-04-17T12:00:00Z",
         "git_sha": "bbb",
         "fixtures": [
-            {"name": "a", "wall_ms_p50": 15.0, "tokens": {"input": 120,
-                "method": "count_tokens"}},
+            {"name": "a", "wall_ms_p50": 15.0, "tokens": {"input": 120, "method": "count_tokens"}},
         ],
         "aggregates": {
             "total_wall_ms_p50": 15.0,
@@ -415,9 +415,7 @@ def test_compare_fails_when_fewer_than_two_runs(tmp_path, capsys):
     from bench import run_compare
 
     history = tmp_path / "h.jsonl"
-    history.write_text(
-        _json.dumps({"ts": "t", "fixtures": [], "aggregates": {}}) + "\n"
-    )
+    history.write_text(_json.dumps({"ts": "t", "fixtures": [], "aggregates": {}}) + "\n")
 
     rc = run_compare(history_path=history)
     assert rc != 0
@@ -456,12 +454,8 @@ def test_mode_b_reports_floor_and_per_rule(tmp_path, monkeypatch):
     report = result["report"]
     assert report["floor_tokens"] > 0
     assert len(report["per_rule"]) == 2  # two semantic rules
-    long_cost = next(
-        r["tokens"] for r in report["per_rule"] if r["id"] == "sem-long"
-    )
-    short_cost = next(
-        r["tokens"] for r in report["per_rule"] if r["id"] == "sem-short"
-    )
+    long_cost = next(r["tokens"] for r in report["per_rule"] if r["id"] == "sem-long")
+    short_cost = next(r["tokens"] for r in report["per_rule"] if r["id"] == "sem-short")
     assert long_cost > short_cost
     assert "diff_scaling" in report
     sizes = [row["added_lines"] for row in report["diff_scaling"]]
@@ -505,3 +499,36 @@ def test_mode_b_errors_when_config_missing(tmp_path, capsys):
     assert result["returncode"] != 0
     err = capsys.readouterr().err
     assert "not found" in err.lower()
+
+
+def test_real_fixtures_complete_successfully(tmp_path, monkeypatch):
+    """All authored fixtures under bench/fixtures/ run without errors."""
+    import json as _json
+
+    from bench import run_mode_a
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    fixtures_dir = repo_root / "bench" / "fixtures"
+    if not fixtures_dir.is_dir():
+        import pytest
+
+        pytest.skip("fixtures directory not present")
+
+    monkeypatch.setenv("BULLY_TRUST_ALL", "1")
+    monkeypatch.chdir(repo_root)
+    history = tmp_path / "history.jsonl"
+
+    rc = run_mode_a(
+        fixtures_dir=fixtures_dir,
+        history_path=history,
+        use_api=False,
+        iterations=2,
+        skip_cold_start=True,
+    )
+    assert rc == 0
+    record = _json.loads(history.read_text().strip().splitlines()[-1])
+    names = {f["name"] for f in record["fixtures"]}
+    assert len(names) >= 8
+    # Auto-generated skip fixture should short-circuit (wall time near zero).
+    skip_fx = next(f for f in record["fixtures"] if "auto-generated-skip" in f["name"])
+    assert skip_fx["wall_ms_p50"] < 10.0
