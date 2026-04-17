@@ -465,10 +465,11 @@ def run_mode_b(
     config_path: Path,
     use_api: bool = True,
     emit_json: bool = False,
-) -> dict:
+) -> dict | None:
     """Analyze a .bully.yml's input-token cost.
 
-    Returns {"returncode": int, "report": {...} | None}.
+    Returns the report dict on success, None on failure (error already
+    printed to stderr).
     """
     import pipeline as _pl_pkg
 
@@ -479,13 +480,13 @@ def run_mode_b(
 
     if not config_path.is_file():
         sys.stderr.write(f"bench: config not found: {config_path}\n")
-        return {"returncode": 1, "report": None}
+        return None
 
     try:
         rules = pl.parse_config(str(config_path))
     except pl.ConfigError as e:
         sys.stderr.write(f"bench: config error: {e}\n")
-        return {"returncode": 1, "report": None}
+        return None
 
     semantic_rules = [r for r in rules if r.engine == "semantic"]
     deterministic = [r for r in rules if r.engine in ("script", "ast")]
@@ -538,7 +539,7 @@ def run_mode_b(
         print(json.dumps(report, indent=2))
     else:
         _print_mode_b_report(report)
-    return {"returncode": 0, "report": report}
+    return report
 
 
 def _print_mode_b_report(report: dict) -> None:
@@ -603,12 +604,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.config:
-        result = run_mode_b(
+        report = run_mode_b(
             config_path=Path(args.config),
             use_api=not args.no_tokens,
             emit_json=args.json,
         )
-        return result["returncode"]
+        return 0 if report is not None else 1
     if args.compare:
         return run_compare(history_path=Path(args.history))
     return run_mode_a(

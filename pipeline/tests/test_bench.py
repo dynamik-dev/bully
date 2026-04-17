@@ -450,8 +450,8 @@ def test_mode_b_reports_floor_and_per_rule(tmp_path, monkeypatch):
     monkeypatch.setenv("BULLY_TRUST_ALL", "1")
 
     result = run_mode_b(config_path=cfg, use_api=False, emit_json=True)
-    assert result["returncode"] == 0
-    report = result["report"]
+    assert result is not None
+    report = result
     assert report["floor_tokens"] > 0
     assert len(report["per_rule"]) == 2  # two semantic rules
     long_cost = next(r["tokens"] for r in report["per_rule"] if r["id"] == "sem-long")
@@ -484,8 +484,8 @@ def test_mode_b_handles_config_with_no_semantic_rules(tmp_path, monkeypatch):
     monkeypatch.setenv("BULLY_TRUST_ALL", "1")
 
     result = run_mode_b(config_path=cfg, use_api=False, emit_json=True)
-    assert result["returncode"] == 0
-    report = result["report"]
+    assert result is not None
+    report = result
     assert report["floor_tokens"] == 0
     assert report["per_rule"] == []
     assert len(report["deterministic_rules"]) == 1
@@ -496,7 +496,7 @@ def test_mode_b_errors_when_config_missing(tmp_path, capsys):
     from bench import run_mode_b
 
     result = run_mode_b(config_path=tmp_path / "nope.yml", use_api=False)
-    assert result["returncode"] != 0
+    assert result is None
     err = capsys.readouterr().err
     assert "not found" in err.lower()
 
