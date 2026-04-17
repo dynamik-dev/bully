@@ -20,14 +20,15 @@ dev = [
     "hypothesis>=6.100",
 ]
 
+[project.scripts]
+bully = "pipeline.pipeline:main"
+
 [tool.setuptools]
-# This repo is a flat layout of runnable scripts (pipeline/pipeline.py,
-# pipeline/analyzer.py, pipeline/hook.sh). `pip install -e ".[dev]"`
-# installs dev tooling (ruff, shellcheck-py, pytest, pre-commit) without
-# pretending to be an importable package. Run scripts directly:
-#   python3 pipeline/pipeline.py ...
-#   python3 pipeline/analyzer.py ...
-packages = []
+# `pip install -e .` makes the `pipeline` package importable so the
+# `bully` console script can resolve `pipeline.pipeline:main`. The hook
+# (`pipeline/hook.sh`) still invokes `pipeline.py` by absolute path -- a
+# console script may not be on $PATH inside the Claude Code hook env.
+packages = ["pipeline"]
 
 [tool.ruff]
 line-length = 100

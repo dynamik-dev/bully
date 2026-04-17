@@ -6,6 +6,9 @@ __pycache__/
 # Per-developer telemetry (see docs/telemetry.md)
 .bully/
 
+# Backlog.md local state
+.backlog/
+
 # Python build artifacts
 build/
 dist/

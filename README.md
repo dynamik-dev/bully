@@ -15,7 +15,7 @@ Bully is a lint pipeline for Claude Code. Every `Edit` / `Write` hits a `PostToo
 
 ## The config
 
-A `.bully.yml` is a flat list of rules. Each rule says what to check, where it applies, how bad it is, and which engine runs it `script` (deterministic shell command) or `semantic` (natural-language rule the agent evaluates against the diff):
+A `.bully.yml` is a flat list of rules. Each rule says what to check, where it applies, how bad it is, and which engine runs it -- `script` (deterministic shell command), `ast` (structural pattern via [ast-grep](https://ast-grep.github.io/)), or `semantic` (natural-language rule the agent evaluates against the diff):
 
 ```yaml
 schema_version: 1
@@ -28,6 +28,13 @@ rules:
     severity: error
     script: "grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0"
 
+  no-any-cast:
+    description: "No `as any` casts -- use a precise type or `unknown` plus narrowing."
+    engine: ast
+    scope: ["src/**/*.ts", "src/**/*.tsx"]
+    severity: error
+    pattern: "$EXPR as any"
+
   prefer-derived-state:
     description: >
       React components should not use `useEffect` to derive state from
@@ -39,7 +46,9 @@ rules:
     severity: warning
 ```
 
-The first rule runs a grep on every edited `.ts`/`.tsx`; the second ships the diff to the agent with the description as the evaluation prompt. No plugins, no DSL -- just globs, shell, and prose.
+The first rule runs a grep on every edited `.ts`/`.tsx`. The second matches the structural pattern with ast-grep -- ignores comments, strings, and formatting variants. The third ships the diff to the agent with the description as the evaluation prompt. No plugins, no DSL -- just globs, shell, ast patterns, and prose.
+
+`engine: ast` requires `ast-grep` on `$PATH` (`brew install ast-grep`, `cargo install ast-grep`, or `pip install ast-grep-cli`). If missing, ast rules are skipped at runtime with a one-line stderr hint and `bully doctor` flags it.
 
 Need to share rules across your own repos? `extends:` accepts any relative or absolute path to another `.bully.yml`:
 
@@ -59,10 +68,10 @@ Local rules override inherited rules of the same id.
   <img src="bully-flow.png" alt="Bully flow: Edit/Write → PostToolUse hook → script phase → semantic phase → block or pass" width="500">
 </p>
 
-1. **Script phase** -- deterministic checks (grep, awk, shell-out to a linter). Fast. Fails the tool call on error-severity violations via exit code 2.
-2. **Semantic phase** -- if the script phase passes, the pipeline hands a unified diff plus rule descriptions to the evaluator subagent. Structured verdicts come back; the parent session surfaces them.
+1. **Script + AST phase** -- deterministic checks. `script` rules shell out (grep, awk, linters); `ast` rules run structural patterns through ast-grep. Both are fast and fail the tool call on error-severity violations via exit code 2.
+2. **Semantic phase** -- if the deterministic phase passes, the pipeline hands a unified diff plus rule descriptions to the evaluator subagent. Structured verdicts come back; the parent session surfaces them.
 
-Deterministic rules stay as shell. Judgment rules ("inline single-use variables", "don't derive state with `useEffect`") live as plain English the agent evaluates against the diff. Same trigger, same output format, same fix loop -- across every language in the repo.
+Deterministic rules stay as shell or ast patterns. Judgment rules ("inline single-use variables", "don't derive state with `useEffect`") live as plain English the agent evaluates against the diff. Same trigger, same output format, same fix loop -- across every language in the repo.
 
 ## Prerequisites
 
@@ -87,10 +96,16 @@ To change the evaluator model, set the plugin's agent override or edit `model:` 
 ### Verify the install
 
 ```bash
-python3 "$(ls -d ~/.claude/plugins/cache/*/bully/*/ | tail -1)pipeline/pipeline.py" --doctor
+bully doctor
 ```
 
-`--doctor` checks Python version, config presence and parse-ability, hook wiring, evaluator-agent registration, and each skill. One line per check, `[OK]` or `[FAIL]`.
+`doctor` checks Python version, config presence and parse-ability, hook wiring, evaluator-agent registration, and each skill. One line per check, `[OK]` or `[FAIL]`.
+
+If `bully` isn't on `$PATH` (e.g., you skipped `pip install -e .`), call the pipeline directly as a fallback:
+
+```bash
+python3 "$(ls -d ~/.claude/plugins/cache/*/bully/*/ | tail -1)pipeline/pipeline.py" --doctor
+```
 
 ### Manual install (fallback)
 
@@ -140,7 +155,7 @@ The init skill detects your stack, scans for existing linter configs, asks a cou
 A fresh rule across an existing codebase lights up every pre-existing problem. Baseline the current state so only _new_ violations block edits:
 
 ```bash
-python3 ~/.bully/pipeline/pipeline.py --baseline-init --glob "src/**/*.ts"
+bully baseline-init --glob "src/**/*.ts"
 ```
 
 That writes `.bully/baseline.json`. Future runs ignore anything recorded there. See [docs/design.md](docs/design.md) for the contract.
@@ -178,14 +193,14 @@ The `bully-author` skill walks through engine choice, drafts the rule, tests it 
 For authoring and debugging rules without triggering an Edit:
 
 ```bash
-PIPE=~/.bully/pipeline/pipeline.py
-
-python3 "$PIPE" --validate                                   # parse + enum checks
-python3 "$PIPE" --file src/foo.php                           # full pipeline on a file
-python3 "$PIPE" --file src/foo.php --rule no-compact         # isolate one rule
-python3 "$PIPE" --file src/foo.php --print-prompt            # see the semantic prompt
-python3 "$PIPE" --show-resolved-config                       # rules after extends:
+bully validate                                  # parse + enum checks
+bully lint src/foo.php                          # full pipeline on a file
+bully lint src/foo.php --rule no-compact        # isolate one rule
+bully lint src/foo.php --print-prompt           # see the semantic prompt
+bully show-resolved-config                      # rules after extends:
 ```
+
+`bully` is the console script installed by `pip install -e .`. If you can't install the package, call the pipeline directly: `python3 ~/.bully/pipeline/pipeline.py --validate` (or with `--file`, `--show-resolved-config`, etc.).
 
 ## Uninstall
 

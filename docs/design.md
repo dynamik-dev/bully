@@ -1,6 +1,6 @@
 # Design
 
-`bully` is a Claude Code skill system that enforces project coding standards through a two-phase evaluation pipeline: deterministic script checks for pattern-matchable rules, followed by LLM semantic evaluation for judgment-based rules. It fires on every `Edit` and `Write` tool call via the `PostToolUse` hook.
+`bully` is a Claude Code skill system that enforces project coding standards through a two-phase evaluation pipeline: deterministic checks (`script` rules shell out; `ast` rules run structural patterns through ast-grep) for pattern-matchable rules, followed by LLM semantic evaluation for judgment-based rules. It fires on every `Edit` and `Write` tool call via the `PostToolUse` hook.
 
 ## Core principles
 
@@ -21,10 +21,12 @@ Rules live in `.bully.yml` at the project root.
 |-------|----------|-------------|
 | `id` | yes | Unique identifier. Used in violation payloads and `passed_checks` context. |
 | `description` | yes | What the rule enforces. Natural language. For semantic rules, this IS the evaluation prompt. |
-| `engine` | yes | `script` or `semantic`. |
+| `engine` | yes | `script`, `ast`, or `semantic`. |
 | `scope` | yes | File glob or list of globs this rule applies to. See [Scope](#scope). |
 | `severity` | yes | `error` (blocks) or `warning` (reported, non-blocking). |
 | `script` | script engine only | Shell command to run. `{file}` is replaced with the file path. Diff provided on stdin. Exit non-zero on violation. |
+| `pattern` | ast engine only | An [ast-grep pattern](https://ast-grep.github.io/guide/pattern-syntax.html). Literal code with `$NAME` for single-node captures, `$$$REST` for variadic. |
+| `language` | ast engine, optional | Explicit ast-grep language (`ts`, `python`, `php`, ...). Inferred from the matched file extension when omitted. |
 
 ### Scope
 
@@ -75,7 +77,8 @@ rules:
 
 - **No prescribed transformations.** `fix_hint` is a one-liner, not a codemod. The agent still performs the edit — prescribed transformations couple the rule to specific syntax and rot fast.
 - **No rule dependencies or ordering.** Rules are independent. If two rules interact, the LLM sees both via the `passed_checks` context.
-- **No `language` field.** Scope globs handle targeting.
+- **`language` is optional even on ast rules.** Scope globs do most of the targeting work; `language` is escape-hatch for cases where the file extension can't disambiguate (e.g. `.h` could be C or C++).
+- **ast-grep is an optional runtime dep.** Without it, `engine: ast` rules are skipped at runtime with a stderr hint and `bully doctor` reports `[FAIL]`. The pipeline itself stays stdlib-only.
 
 ## Validation
 
@@ -92,7 +95,7 @@ Checks performed on load:
 Run the checks without firing the hook:
 
 ```bash
-python3 pipeline/pipeline.py --validate
+bully validate
 ```
 
 Exits 0 on a clean config, 1 with a human-readable report otherwise. `hook.sh` runs `--validate` once per session (keyed off a tmpdir marker) so malformed configs surface on the first edit instead of silently dropping a rule forever.
@@ -159,15 +162,26 @@ Directives are scoped to the line they appear on. There is no file-level or bloc
 
 ## Short-circuit
 
-Before any rule loads, the pipeline skips auto-generated files outright. The list lives in `pipeline/pipeline.py:AUTO_GENERATED_PATTERNS`:
+Before any rule loads, the pipeline skips files matching a merged set of skip globs. The merge order is:
 
-```
-package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, Cargo.lock,
-composer.lock, Gemfile.lock, go.sum, *.min.*, *.generated.*,
-dist/**, build/**, __pycache__/**, node_modules/**, vendor/**
+1. **Built-in defaults** (`pipeline/pipeline.py:SKIP_PATTERNS`):
+
+   ```
+   package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, Cargo.lock,
+   *.min.js, *.min.css, *.min.*, dist/**, build/**, __pycache__/**,
+   *.generated.*, *.pb.go, *.g.dart, *.freezed.dart
+   ```
+
+2. **User-global**: `~/.bully-ignore` (one glob per line, `#` comments allowed). Per-machine, never committed.
+3. **Project-local**: a top-level `skip:` key in `.bully.yml` -- inline (`skip: ["_build/**", "vendor/**"]`) or block-list form. Inherited from anything the config `extends:`.
+
+```yaml
+schema_version: 1
+skip: ["_build/**", "vendor/**"]
+rules: ...
 ```
 
-Matches return `pass` before config parse, scope match, or script dispatch. No config flag, no override — lockfiles and build artifacts never benefit from lint and firing on them burns cycles on every edit.
+Matches return `pass` before config parse, scope match, or script dispatch. The built-in list is always active; the user-global and project-local lists merge on top. Lockfiles and build artifacts never benefit from lint and firing on them burns cycles on every edit.
 
 ## Evaluation pipeline
 
@@ -192,7 +206,10 @@ PostToolUse fires (Edit or Write)
        +-- No matching rules? --> exit 0 (pass)
        |
        v
-  Phase 1: run script rules (per-rule 30s timeout)
+  Phase 1: run script + ast rules (per-rule 30s timeout)
+       - script rules shell out (`{file}` substituted in)
+       - ast rules invoke ast-grep with rule.pattern
+         (skipped with stderr hint if ast-grep is missing)
        |
        +-- Any error-severity violations?
        |     --> print text to stderr

@@ -72,3 +72,25 @@ rules:
     engine: semantic
     scope: "pipeline/tests/test_*.py"
     severity: warning
+
+  prefer-perf-counter:
+    description: >
+      Use `time.perf_counter()` for measuring elapsed time, not `time.time()`.
+      `time.time()` is a wall-clock that can jump backwards on NTP sync;
+      `perf_counter()` is monotonic and ideal for latency measurement.
+    engine: ast
+    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    severity: error
+    pattern: "time.time()"
+
+  no-shell-true-subprocess:
+    description: >
+      Do not pass `shell=True` to `subprocess.run`. Shell-mode invocation
+      mixes interpolation with shell parsing and is the most common path
+      to command injection. Pass a list of args instead, or if the call
+      is genuinely safe (input is `shlex.quote`'d, etc.), add a per-line
+      `bully-disable: no-shell-true-subprocess <reason>`.
+    engine: ast
+    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    severity: error
+    pattern: "subprocess.run($$$, shell=True, $$$)"

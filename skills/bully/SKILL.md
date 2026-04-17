@@ -81,10 +81,10 @@ For each entry in `VIOLATIONS:`, look up severity in the original `evaluate` arr
 After parsing VIOLATIONS / NO_VIOLATIONS (whether from the subagent or from inline eval), record each rule's verdict. For every rule id in the original `evaluate` array, invoke the Bash tool once with:
 
 ```
-python3 $HOME/.bully/pipeline/pipeline.py --log-verdict --rule <rule-id> --verdict <pass|violation> --file <file-path>
+bully --log-verdict --rule <rule-id> --verdict <pass|violation> --file <file-path>
 ```
 
-Use `violation` if the rule appears in VIOLATIONS, `pass` if it appears in NO_VIOLATIONS. This is a no-op when telemetry is disabled, so always invoke. Adjust the path if the pipeline is installed elsewhere.
+Use `violation` if the rule appears in VIOLATIONS, `pass` if it appears in NO_VIOLATIONS. This is a no-op when telemetry is disabled, so always invoke. If `bully` is not on `$PATH`, fall back to invoking the pipeline directly: `python3 "$(ls -d ~/.claude/plugins/cache/*/bully/*/ 2>/dev/null | tail -1)pipeline/pipeline.py"` for plugin installs or `python3 ~/.bully/pipeline/pipeline.py` for the manual install.
 
 ## passed_checks
 

@@ -14,14 +14,15 @@ The skill applies the discipline described here. This doc is the reference; the 
 
 ## Pick an engine
 
-| Use a `script` rule when… | Use a `semantic` rule when… |
-|---------------------------|-----------------------------|
-| The violation is pattern-matchable (`grep`, `awk`, regex). | The violation requires judgment (e.g. "inline single-use variables"). |
-| You want deterministic, fast enforcement. | A mechanical rule would have too many false positives. |
-| You want the rule to work in CI without an LLM. | The rule depends on context (how a variable is used elsewhere). |
-| You're shelling out to an existing tool (phpstan, eslint, pint). | The rule is a prose style guideline. |
+| Use a `script` rule when… | Use an `ast` rule when… | Use a `semantic` rule when… |
+|---|---|---|
+| The violation is matchable with `grep`/`awk`/regex on raw text. | The violation is a **code-structure** pattern (call, cast, declaration) and grep would false-positive on strings/comments. | The violation requires **judgment** (e.g. "inline single-use variables"). |
+| You're shelling out to an existing tool (phpstan, eslint, pint). | You want deterministic, fast, whitespace-invariant matching. | A mechanical rule would have too many false positives. |
+| You want the rule to work in CI without any extra dependency. | You want the rule to work across formatting variants without regex acrobatics. | The rule depends on context (how a variable is used elsewhere) or is a prose style guideline. |
 
-If you can express it as grep, do. Script rules cost milliseconds. Semantic rules cost an LLM turn. A semantic rule that evaluates cleanly to the same mechanical fix over and over is a candidate for promotion to a script rule.
+**Order of preference when a rule could fit more than one engine:** `script` > `ast` > `semantic`. Script rules cost milliseconds. AST rules cost ~10-50 ms per file but eliminate the false-positive tax. Semantic rules cost an LLM turn. Promote noisy semantic rules to ast (or script) when they produce a stable mechanical fix.
+
+**AST prerequisite:** `ast-grep` must be on `$PATH` (`brew install ast-grep` or `cargo install ast-grep`). If it isn't, `engine: ast` rules are skipped at runtime with a one-line stderr hint — they do not block edits. Run `bully doctor` to see which rules would be skipped.
 
 ## Script rule skeleton
 
@@ -105,6 +106,59 @@ no-compact:
 The pipeline passes the string through unchanged as `suggestion` on every `Violation` the rule produces. The `bully` skill already renders `suggestion`, so the hint shows up next to the violation text with no other plumbing.
 
 Keep hints short, mechanical, and universally applicable to the rule — anything that depends on surrounding code belongs in a semantic rule's `description` instead. There is no placeholder syntax; the hint is static text per rule.
+
+## AST rule skeleton
+
+```yaml
+rule-id:
+  description: "One-sentence description."
+  engine: ast
+  scope: ["*.ts", "*.tsx"]
+  severity: error
+  pattern: "$EXPR as any"
+  language: ts        # optional; inferred from the scope's file extension when unambiguous
+```
+
+- `pattern` is an [ast-grep pattern](https://ast-grep.github.io/guide/pattern-syntax.html): literal code with `$NAME` for single-node captures and `$$$REST` for variadic captures.
+- `language` picks the tree-sitter grammar (`ts`, `tsx`, `js`, `python`, `go`, `rust`, `php`, `csharp`, `java`, …). If omitted, bully infers it from the edited file's extension. Set it explicitly when a pack covers multiple extensions that map to different grammars (e.g. `.ts` vs `.tsx`).
+- No `script` field.
+- Exit is implicit: a non-empty match list = violations; empty = pass.
+- Each rule has a 30-second timeout, same as `script`.
+
+### Minimal ast pattern
+
+```yaml
+no-var-dump:
+  description: "Do not leave var_dump() calls in committed code."
+  engine: ast
+  scope: "*.php"
+  severity: error
+  pattern: "var_dump($$$)"
+```
+
+`var_dump($$$)` matches any call to `var_dump` regardless of argument shape or count, and ignores matches in strings or comments — the same rule as `grep 'var_dump'` but without the false positives.
+
+### Why prefer ast over grep for structural rules
+
+```yaml
+# Fragile: grep matches inside strings and comments
+no-db-facade-script:
+  engine: script
+  scope: "*.php"
+  script: "grep -n 'DB::' {file} && exit 1 || exit 0"
+
+# Precise: only real static method calls on the DB class match
+no-db-facade-ast:
+  engine: ast
+  scope: "*.php"
+  pattern: "DB::$METHOD($$$)"
+```
+
+The grep version fires on `// the DB:: facade is banned` and on `$msg = "DB::something"`. The ast version matches only actual scope-resolution calls on the identifier `DB`.
+
+### When ast-grep isn't installed
+
+If you author an `engine: ast` rule but ast-grep isn't on `$PATH`, the pipeline prints a one-line stderr hint and skips the rule — it does not block the edit. `bully validate` surfaces this as a `[WARN]`; `bully doctor` surfaces it as a `[FAIL]` so installs can be caught in CI.
 
 ## Semantic rule skeleton
 
@@ -217,7 +271,7 @@ Cycles and unknown references fail loud at parse time. See [design.md#extends](d
 Before committing a rule, run the validator:
 
 ```bash
-python3 pipeline/pipeline.py --validate
+bully validate
 ```
 
 It parses `.bully.yml` (plus anything it extends) with the same hardened reader the hook uses. The validator reports:
@@ -262,16 +316,16 @@ Without triggering an Edit, run the pipeline manually:
 
 ```bash
 # Full pipeline against a file
-python3 pipeline/pipeline.py --config .bully.yml --file src/foo.php
+bully lint src/foo.php
 
 # Just one rule (isolate it)
-python3 pipeline/pipeline.py --config .bully.yml --file src/foo.php --rule no-compact
+bully lint src/foo.php --rule no-compact
 
 # See the semantic evaluation prompt without calling an LLM
-python3 pipeline/pipeline.py --config .bully.yml --file src/foo.php --print-prompt
+bully lint src/foo.php --print-prompt
 
 # Supply a diff manually (bypasses stdin/file-state inference)
-python3 pipeline/pipeline.py --config .bully.yml --file src/foo.php --diff "$(git diff src/foo.php)"
+bully lint src/foo.php --diff "$(git diff src/foo.php)"
 ```
 
 Exit codes:

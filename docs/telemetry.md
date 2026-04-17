@@ -88,7 +88,7 @@ The pipeline ships two extra record types that close the semantic-rule telemetry
 After the `bully` skill finishes evaluating a semantic payload, it calls:
 
 ```bash
-python3 pipeline/pipeline.py --log-verdict \
+bully --log-verdict \
   --rule inline-single-use-vars \
   --file src/Evaluators/CachedEvaluator.php \
   --verdict violation
@@ -127,7 +127,7 @@ Before dispatching the evaluator the pipeline applies cheap "can't possibly matc
 
 ### Note on skill version
 
-`semantic_verdict` depends on the `bully` skill being up to date — older versions do not call `--log-verdict`. If verdict records are missing for known-firing semantic rules, update the skill or bypass the evaluator manually (`pipeline.py --log-verdict` is a plain CLI). `semantic_skipped` is pipeline-side and independent of the skill.
+`semantic_verdict` depends on the `bully` skill being up to date — older versions do not call `--log-verdict`. If verdict records are missing for known-firing semantic rules, update the skill or bypass the evaluator manually (`bully --log-verdict` is a plain CLI). `semantic_skipped` is pipeline-side and independent of the skill.
 
 ## Running the analyzer
 

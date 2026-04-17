@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -30,6 +29,9 @@ jobs:
 
       - name: pytest
         run: pytest -q
+
+      - name: install ast-grep
+        run: pip install ast-grep-cli
 
       - name: bully dogfood
         run: bash scripts/dogfood.sh

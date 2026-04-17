@@ -21,10 +21,20 @@ rules:
       Do not use `as any` casts. They silence the type checker and hide
       real bugs. Use a precise type, `unknown` plus a narrowing check,
       or a generic if the value is genuinely polymorphic.
-    engine: script
+    engine: ast
     scope: ["*.ts", "*.tsx"]
     severity: error
-    script: "grep -nE '\\bas[[:space:]]+any\\b' {file} && exit 1 || exit 0"
+    pattern: "$EXPR as any"
+
+  no-dangerous-inner-html:
+    description: >
+      Do not use `dangerouslySetInnerHTML`. If you genuinely need raw
+      HTML, sanitize upstream and wrap the prop in a single reviewed
+      helper; never set it inline in components.
+    engine: ast
+    scope: "*.tsx"
+    severity: error
+    pattern: "<$TAG dangerouslySetInnerHTML={$_} />"
 
   no-ts-ignore:
     description: >

@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -25,10 +27,57 @@ from pathlib import Path, PurePath
 # Config schema + parser
 # ---------------------------------------------------------------------------
 
-VALID_ENGINES = {"script", "semantic"}
+VALID_ENGINES = {"script", "semantic", "ast"}
 VALID_SEVERITIES = {"error", "warning"}
-VALID_RULE_FIELDS = {"description", "engine", "scope", "severity", "script", "fix_hint"}
-VALID_TOP_LEVEL = {"rules", "schema_version", "extends"}
+VALID_RULE_FIELDS = {
+    "description",
+    "engine",
+    "scope",
+    "severity",
+    "script",
+    "fix_hint",
+    "pattern",
+    "language",
+}
+VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip"}
+
+# User-global ignore file: one glob per line, blank lines and `#` comments
+# allowed. Loaded by `effective_skip_patterns` and merged with the built-in
+# `SKIP_PATTERNS` plus anything declared in `.bully.yml`.
+USER_GLOBAL_IGNORE_FILENAME = ".bully-ignore"
+
+# ast-grep `--lang` values per file extension.
+_AST_LANG_BY_EXT: dict[str, str] = {
+    ".ts": "ts",
+    ".tsx": "tsx",
+    ".js": "js",
+    ".jsx": "jsx",
+    ".mjs": "js",
+    ".cjs": "js",
+    ".py": "python",
+    ".rb": "ruby",
+    ".go": "go",
+    ".rs": "rust",
+    ".php": "php",
+    ".cs": "csharp",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".swift": "swift",
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".scala": "scala",
+    ".lua": "lua",
+    ".html": "html",
+    ".css": "css",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".sh": "bash",
+    ".bash": "bash",
+}
 
 # Files we never want to lint -- lockfiles, minified bundles, generated code.
 SKIP_PATTERNS: tuple[str, ...] = (
@@ -69,6 +118,8 @@ class Rule:
     severity: str
     script: str | None = None
     fix_hint: str | None = None
+    pattern: str | None = None
+    language: str | None = None
 
 
 @dataclass
@@ -148,6 +199,7 @@ class _ParsedConfig:
 
     rules: list[Rule] = field(default_factory=list)
     extends: list[str] = field(default_factory=list)
+    skip: list[str] = field(default_factory=list)
     schema_version: int | None = None
 
 
@@ -167,6 +219,8 @@ def _parse_single_file(path: str) -> _ParsedConfig:
     seen_ids: set[str] = set()
     in_rules_block = False
     in_extends_block = False
+    in_skip_block = False
+    skip: list[str] = []
 
     def finalize_rule() -> None:
         nonlocal current_id, fields, field_lines
@@ -217,6 +271,15 @@ def _parse_single_file(path: str) -> _ParsedConfig:
         elif in_extends_block:
             in_extends_block = False
 
+        # Skip-block continuation: `- glob` at indent 2.
+        if in_skip_block and indent >= 2 and stripped.startswith("-"):
+            item = _parse_scalar(stripped[1:].strip())
+            if item:
+                skip.append(item)
+            continue
+        elif in_skip_block:
+            in_skip_block = False
+
         # Top-level key (indent 0).
         if indent == 0:
             if current_id is not None:
@@ -253,6 +316,17 @@ def _parse_single_file(path: str) -> _ParsedConfig:
                     in_extends_block = True
                 else:
                     raise ConfigError("extends must be a list like [pack-a, './local.yml']", lineno)
+            elif key == "skip":
+                as_list = _parse_inline_list(value_raw)
+                if as_list is not None:
+                    skip.extend(g for g in as_list if g)
+                elif value_raw == "":
+                    in_skip_block = True
+                else:
+                    raise ConfigError(
+                        'skip must be a list like ["_build/**", "vendor/**"]',
+                        lineno,
+                    )
             # `rules:` handled above; anything else would have raised already.
             continue
 
@@ -313,7 +387,12 @@ def _parse_single_file(path: str) -> _ParsedConfig:
     if current_id is not None:
         finalize_rule()
 
-    return _ParsedConfig(rules=rules, extends=extends, schema_version=schema_version)
+    return _ParsedConfig(
+        rules=rules,
+        extends=extends,
+        skip=skip,
+        schema_version=schema_version,
+    )
 
 
 def _build_rule(
@@ -328,7 +407,7 @@ def _build_rule(
     engine = str(fields.get("engine", "script"))
     if engine not in VALID_ENGINES:
         raise ConfigError(
-            f"rule '{rule_id}': invalid engine {engine!r} (must be 'script' or 'semantic')",
+            f"rule '{rule_id}': invalid engine {engine!r} (must be 'script', 'semantic', or 'ast')",
             field_lines.get("engine", rule_line),
         )
 
@@ -340,6 +419,9 @@ def _build_rule(
         )
 
     script_value = fields.get("script")
+    pattern_value = fields.get("pattern")
+    language_value = fields.get("language")
+
     if engine == "script" and script_value is None:
         raise ConfigError(
             f"rule '{rule_id}': engine is 'script' but no 'script' field provided",
@@ -350,6 +432,28 @@ def _build_rule(
             f"rule '{rule_id}': engine is 'semantic' but a 'script' field is set "
             f"(contradiction -- remove one)",
             field_lines.get("script", rule_line),
+        )
+    if engine == "ast":
+        if pattern_value is None:
+            raise ConfigError(
+                f"rule '{rule_id}': engine is 'ast' but no 'pattern' field provided",
+                rule_line,
+            )
+        if script_value is not None:
+            raise ConfigError(
+                f"rule '{rule_id}': engine is 'ast' but a 'script' field is set "
+                f"(contradiction -- use 'pattern' for ast rules)",
+                field_lines.get("script", rule_line),
+            )
+    if engine != "ast" and pattern_value is not None:
+        raise ConfigError(
+            f"rule '{rule_id}': 'pattern' is only valid when engine is 'ast'",
+            field_lines.get("pattern", rule_line),
+        )
+    if engine != "ast" and language_value is not None:
+        raise ConfigError(
+            f"rule '{rule_id}': 'language' is only valid when engine is 'ast'",
+            field_lines.get("language", rule_line),
         )
 
     fix_hint_value = fields.get("fix_hint")
@@ -362,6 +466,8 @@ def _build_rule(
         severity=severity,
         script=str(script_value) if script_value is not None else None,
         fix_hint=str(fix_hint_value) if fix_hint_value is not None else None,
+        pattern=str(pattern_value) if pattern_value is not None else None,
+        language=str(language_value) if language_value is not None else None,
     )
 
 
@@ -380,6 +486,32 @@ def _resolve_extends_target(spec: str, config_path: str) -> Path:
     if p.is_absolute():
         return p.resolve()
     return (config_dir / p).resolve()
+
+
+def _collect_config_files(path: str, visited: list[str] | None = None) -> list[Path]:
+    """Return the absolute paths of a config plus every file it extends.
+
+    Resolution order matches `_load_with_extends`: parents first, then self.
+    Used by the trust gate to compute a single checksum over the full
+    effective config.
+    """
+    visited = visited or []
+    abs_path = Path(path).resolve()
+    if str(abs_path) in visited:
+        return []
+    visited = visited + [str(abs_path)]
+    if not abs_path.is_file():
+        return []
+    try:
+        parsed = _parse_single_file(str(abs_path))
+    except ConfigError:
+        return [abs_path]
+    collected: list[Path] = []
+    for spec in parsed.extends:
+        target = _resolve_extends_target(spec, str(abs_path))
+        collected.extend(_collect_config_files(str(target), visited))
+    collected.append(abs_path)
+    return collected
 
 
 def parse_config(path: str) -> list[Rule]:
@@ -431,12 +563,15 @@ def _load_with_extends(path: str, visited: list[str]) -> list[Rule]:
 # ---------------------------------------------------------------------------
 
 
-def _path_matches_skip(file_path: str) -> bool:
-    """Return True if the path matches any SKIP_PATTERNS entry."""
+def _path_matches_skip(
+    file_path: str,
+    extra_patterns: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """Return True if the path matches any built-in or extra skip pattern."""
     p = PurePath(file_path)
     name = p.name
     posix = p.as_posix()
-    for pat in SKIP_PATTERNS:
+    for pat in (*SKIP_PATTERNS, *extra_patterns):
         # Match basename (covers `*.min.js`, `package-lock.json`, etc.)
         if fnmatch.fnmatch(name, pat):
             return True
@@ -455,6 +590,73 @@ def _path_matches_skip(file_path: str) -> bool:
             if prefix in p.parts:
                 return True
     return False
+
+
+def _load_user_global_skips() -> list[str]:
+    """Load globs from `~/.bully-ignore` (one per line, `#` comments allowed).
+
+    Missing or unreadable files yield an empty list -- this is a per-user
+    convenience, never a hard requirement.
+    """
+    path = Path.home() / USER_GLOBAL_IGNORE_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        raw = path.read_text()
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        out.append(s)
+    return out
+
+
+def _collect_skip_with_extends(path: str, visited: list[str] | None = None) -> list[str]:
+    """Walk a config and its extends chain, collecting `skip:` entries in order.
+
+    Parents are visited first so child configs can append (the merge order in
+    `effective_skip_patterns` makes both equivalent for matching, but we keep
+    declaration order for predictable doctor output).
+    """
+    visited = visited or []
+    abs_path = str(Path(path).resolve())
+    if abs_path in visited:
+        return []
+    visited = visited + [abs_path]
+    if not Path(abs_path).is_file():
+        return []
+    try:
+        parsed = _parse_single_file(abs_path)
+    except ConfigError:
+        return []
+    out: list[str] = []
+    for spec in parsed.extends:
+        target = _resolve_extends_target(spec, abs_path)
+        out.extend(_collect_skip_with_extends(str(target), visited))
+    out.extend(parsed.skip)
+    return out
+
+
+def effective_skip_patterns(
+    config_path: str,
+    *,
+    include_user_global: bool = True,
+) -> tuple[str, ...]:
+    """Return the merged tuple of built-in + user-global + project skip globs.
+
+    Order: built-in defaults, then `~/.bully-ignore` (when enabled), then
+    every `skip:` entry pulled from the config and its extends chain.
+    Duplicates are preserved -- `_path_matches_skip` short-circuits on the
+    first match.
+    """
+    project: list[str] = []
+    if config_path and Path(config_path).is_file():
+        project = _collect_skip_with_extends(config_path)
+    user_global = _load_user_global_skips() if include_user_global else []
+    return (*SKIP_PATTERNS, *user_global, *project)
 
 
 def filter_rules(rules: list[Rule], file_path: str) -> list[Rule]:
@@ -667,8 +869,9 @@ def parse_script_output(rule_id: str, severity: str, output: str) -> list[Violat
 
 def execute_script_rule(rule: Rule, file_path: str, diff: str) -> list[Violation]:
     """Run a script-engine rule against a file."""
-    cmd = rule.script.replace("{file}", file_path)
+    cmd = rule.script.replace("{file}", shlex.quote(file_path))
     try:
+        # bully-disable: no-shell-true-subprocess script-engine contract; cmd is shlex.quote'd above
         result = subprocess.run(
             cmd,
             shell=True,
@@ -703,6 +906,138 @@ def execute_script_rule(rule: Rule, file_path: str, diff: str) -> list[Violation
         return violations
 
     return []
+
+
+# ---------------------------------------------------------------------------
+# AST rule execution (ast-grep)
+# ---------------------------------------------------------------------------
+
+
+_AST_GREP_INSTALL_HINT = "install ast-grep: brew install ast-grep  (or: cargo install ast-grep)"
+
+
+def _infer_ast_language(file_path: str) -> str | None:
+    """Infer the ast-grep --lang value from a file path. Returns None if unknown."""
+    suffix = PurePath(file_path).suffix.lower()
+    return _AST_LANG_BY_EXT.get(suffix)
+
+
+def ast_grep_available() -> bool:
+    """Return True iff `ast-grep` is on PATH."""
+    return shutil.which("ast-grep") is not None
+
+
+def _parse_ast_grep_json(rule_id: str, severity: str, stdout: str) -> list[Violation]:
+    """Parse ast-grep's --json output into Violations.
+
+    ast-grep emits a JSON array. Each match has `range.start.line` (0-indexed)
+    and `lines` (the matched source text). An empty array means no matches.
+    """
+    stripped = stdout.strip()
+    if not stripped:
+        return []
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    violations: list[Violation] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        rng = item.get("range") or {}
+        start = rng.get("start") if isinstance(rng, dict) else None
+        line_i: int | None = None
+        if isinstance(start, dict):
+            raw_line = start.get("line")
+            if isinstance(raw_line, int):
+                # ast-grep line numbers are 0-indexed; convert to 1-indexed.
+                line_i = raw_line + 1
+        matched = item.get("lines") or item.get("text") or ""
+        description = str(matched).splitlines()[0].strip() if matched else ""
+        violations.append(
+            Violation(
+                rule=rule_id,
+                engine="ast",
+                severity=severity,
+                line=line_i,
+                description=description[:500],
+            )
+        )
+    return violations
+
+
+def execute_ast_rule(rule: Rule, file_path: str) -> list[Violation]:
+    """Run an ast-engine rule against a file via ast-grep.
+
+    Caller is responsible for checking `ast_grep_available()` beforehand and
+    handling the missing-tool path. This function assumes the binary exists
+    and returns [] on any execution error (conservative: don't block edits
+    due to tooling failure).
+    """
+    lang = rule.language or _infer_ast_language(file_path)
+    if lang is None:
+        return [
+            Violation(
+                rule=rule.id,
+                engine="ast",
+                severity=rule.severity,
+                line=None,
+                description=(
+                    f"ast-grep: could not infer --lang from path {file_path!r}; "
+                    "set `language:` on the rule"
+                ),
+            )
+        ]
+
+    cmd = [
+        "ast-grep",
+        "run",
+        "--pattern",
+        rule.pattern or "",
+        "--lang",
+        lang,
+        "--json=compact",
+        file_path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            Violation(
+                rule=rule.id,
+                engine="ast",
+                severity=rule.severity,
+                line=None,
+                description=f"ast-grep timed out after 30s for pattern: {rule.pattern!r}",
+            )
+        ]
+    except FileNotFoundError:
+        # ast-grep disappeared between the PATH check and now. Treat as no-op.
+        return []
+
+    if result.returncode not in (0, 1):
+        # 0 = no matches, 1 = matches (or sometimes error). We only trust stdout.
+        stderr_tail = (result.stderr or "").strip().splitlines()[-1:]
+        hint = stderr_tail[0] if stderr_tail else ""
+        return [
+            Violation(
+                rule=rule.id,
+                engine="ast",
+                severity=rule.severity,
+                line=None,
+                description=f"ast-grep failed (exit {result.returncode}): {hint}"[:500],
+            )
+        ]
+
+    return _parse_ast_grep_json(rule.id, rule.severity, result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -910,6 +1245,145 @@ def _line_has_disable(file_path: str, line: int | None, rule_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Trust boundary: per-machine allowlist for .bully.yml configs
+# ---------------------------------------------------------------------------
+#
+# A `.bully.yml` can execute arbitrary shell commands via `engine: script`
+# rules. Cloning a repo with a malicious `.bully.yml` and making any edit
+# would run attacker-controlled code in the developer's shell. The trust
+# gate prevents this: the first time bully sees a config on a given machine,
+# it refuses to execute any rules until the user runs `bully trust`. After
+# trust, the gate verifies the checksum on every run -- any change to the
+# config (or any extended config) re-requires explicit trust.
+#
+# Trust state is machine-local (`~/.bully-trust.json`), never committed to
+# repos. `BULLY_TRUST_ALL=1` bypasses the gate for CI and first-time setup
+# scripts that have already reviewed the config through other means.
+
+
+_TRUST_ENV_VAR = "BULLY_TRUST_ALL"
+
+
+def _trust_store_path() -> Path:
+    """Per-machine allowlist location."""
+    override = os.environ.get("BULLY_TRUST_STORE")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".bully-trust.json"
+
+
+def _config_checksum(config_path: str) -> str:
+    """SHA256 over the concatenated bytes of a config and all its `extends:` targets.
+
+    Returns '' when the top-level config is unreadable.
+    """
+    files = _collect_config_files(config_path)
+    if not files:
+        return ""
+    h = hashlib.sha256()
+    for f in files:
+        try:
+            h.update(f.read_bytes())
+            # Domain separator prevents collisions across different file splits.
+            h.update(b"\x00")
+        except OSError:
+            return ""
+    return h.hexdigest()
+
+
+def _load_trust_store() -> dict:
+    """Parse the trust store. Returns {} on any read or parse error."""
+    p = _trust_store_path()
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_trust_store(store: dict) -> None:
+    """Write the trust store, creating parent dirs as needed."""
+    p = _trust_store_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(store, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(p)
+
+
+def _trust_status(config_path: str) -> tuple[str, str]:
+    """Return (status, detail). Status is one of: 'trusted', 'untrusted', 'mismatch'.
+
+    'untrusted' means the config has never been trusted on this machine.
+    'mismatch' means it was trusted, but the contents have since changed.
+    """
+    if os.environ.get(_TRUST_ENV_VAR) == "1":
+        return "trusted", "env:BULLY_TRUST_ALL"
+    abs_path = str(Path(config_path).resolve())
+    checksum = _config_checksum(abs_path)
+    if not checksum:
+        return "untrusted", "cannot read config"
+    store = _load_trust_store()
+    entry = store.get("allowed", {}).get(abs_path)
+    if not isinstance(entry, dict):
+        return "untrusted", "never trusted"
+    recorded = entry.get("checksum", "")
+    if recorded != checksum:
+        return "mismatch", f"checksum changed (was {recorded[:12]}..., now {checksum[:12]}...)"
+    return "trusted", recorded[:12] + "..."
+
+
+def _untrusted_stderr(config_path: str, status: str, detail: str) -> str:
+    """Rendered stderr message for untrusted/mismatched configs."""
+    abs_path = Path(config_path).resolve()
+    if status == "mismatch":
+        headline = f"bully: {abs_path} changed since last trust ({detail})."
+        action = "Re-review the config, then run: bully trust --refresh"
+    else:
+        headline = f"bully: {abs_path} is not trusted on this machine."
+        action = "Review the config, then run: bully trust"
+    return (
+        f"{headline}\n"
+        f"Scripts in .bully.yml execute on your machine. "
+        f"Until trusted, rules will not run. Edits are not blocked.\n"
+        f"{action}\n"
+        f"(To allow all configs unconditionally -- not recommended -- "
+        f"set {_TRUST_ENV_VAR}=1.)\n"
+    )
+
+
+def _cmd_trust(config_path: str | None, refresh: bool) -> int:
+    """Record the current config's checksum in the trust store."""
+    path = config_path or ".bully.yml"
+    abs_path = Path(path).resolve()
+    if not abs_path.is_file():
+        print(f"config not found: {abs_path}", file=sys.stderr)
+        return 1
+    checksum = _config_checksum(str(abs_path))
+    if not checksum:
+        print(f"cannot checksum config at {abs_path}", file=sys.stderr)
+        return 1
+
+    store = _load_trust_store()
+    allowed = store.setdefault("allowed", {})
+    existing = allowed.get(str(abs_path))
+    if isinstance(existing, dict) and existing.get("checksum") == checksum and not refresh:
+        print(f"already trusted: {abs_path}  sha256={checksum[:12]}...")
+        return 0
+    allowed[str(abs_path)] = {
+        "checksum": checksum,
+        "allowed_at": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+    }
+    _save_trust_store(store)
+    verb = "updated" if existing else "trusted"
+    print(f"{verb}: {abs_path}  sha256={checksum[:12]}...")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Telemetry
 # ---------------------------------------------------------------------------
 
@@ -962,22 +1436,48 @@ def run_pipeline(
     file_path: str,
     diff: str,
     rule_filter: set[str] | None = None,
+    *,
+    include_skipped: bool = False,
 ) -> dict:
     """Full two-phase pipeline.
 
     Phase 1: script rules. If any error-severity violations, block.
     Phase 2: build semantic payload for remaining semantic rules.
+
+    When `include_skipped=True`, the result dict gains two extra fields:
+    `semantic_skipped` (a list of `{"rule", "reason"}` for every semantic rule
+    the can't-match heuristics dropped) and `rules_evaluated` (a list of
+    `{"rule", "engine", "verdict", "reason"?}` for every rule in scope).
+    Both are intentionally gated -- hook-mode output stays unchanged.
     """
     start = time.perf_counter()
     rule_records: list[dict] = []
     log_path = _telemetry_path(config_path)
 
-    # Short-circuit auto-generated files.
-    if _path_matches_skip(file_path):
+    # Short-circuit auto-generated files (built-in + user-global + project skip).
+    extra_skip = effective_skip_patterns(config_path)[len(SKIP_PATTERNS) :]
+    if _path_matches_skip(file_path, extra_patterns=extra_skip):
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         result = {"status": "skipped", "file": file_path, "reason": "auto-generated"}
         if log_path is not None:
             _append_telemetry(log_path, file_path, "skipped", rule_records, elapsed_ms)
+        return result
+
+    # Trust gate: refuse to execute any rules from an un-reviewed config.
+    trust_status, trust_detail = _trust_status(config_path)
+    if trust_status != "trusted":
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        result = {
+            "status": "untrusted",
+            "file": file_path,
+            "config": str(Path(config_path).resolve()),
+            "trust_status": trust_status,
+            "trust_detail": trust_detail,
+        }
+        if log_path is not None:
+            _append_telemetry(
+                log_path, file_path, f"untrusted:{trust_status}", rule_records, elapsed_ms
+            )
         return result
 
     rules = parse_config(config_path)
@@ -995,22 +1495,25 @@ def run_pipeline(
         return flush("pass", {"status": "pass", "file": file_path})
 
     script_rules = [r for r in matching if r.engine == "script"]
+    ast_rules = [r for r in matching if r.engine == "ast"]
     semantic_rules = [r for r in matching if r.engine == "semantic"]
 
     all_violations: list[Violation] = []
     passed_checks: list[str] = []
     baseline = _load_baseline(config_path)
 
-    for rule in script_rules:
+    def _run_deterministic(
+        rule: Rule,
+        executor,
+        engine_label: str,
+    ) -> None:
         rule_start = time.perf_counter()
-        violations = execute_script_rule(rule, file_path, diff)
+        violations = executor()
         rule_ms = int((time.perf_counter() - rule_start) * 1000)
 
-        # Apply fix_hint as fallback suggestion.
         if rule.fix_hint:
             violations = [replace(v, suggestion=v.suggestion or rule.fix_hint) for v in violations]
 
-        # Filter per-line disables.
         filtered: list[Violation] = []
         for v in violations:
             if _line_has_disable(file_path, v.line, rule.id):
@@ -1025,7 +1528,7 @@ def run_pipeline(
             rule_records.append(
                 {
                     "id": rule.id,
-                    "engine": "script",
+                    "engine": engine_label,
                     "verdict": "violation",
                     "severity": rule.severity,
                     "line": violations[0].line,
@@ -1037,15 +1540,47 @@ def run_pipeline(
             rule_records.append(
                 {
                     "id": rule.id,
-                    "engine": "script",
+                    "engine": engine_label,
                     "verdict": "pass",
                     "severity": rule.severity,
                     "latency_ms": rule_ms,
                 }
             )
 
+    for rule in script_rules:
+        _run_deterministic(
+            rule,
+            lambda r=rule: execute_script_rule(r, file_path, diff),
+            "script",
+        )
+
+    if ast_rules:
+        if ast_grep_available():
+            for rule in ast_rules:
+                _run_deterministic(
+                    rule,
+                    lambda r=rule: execute_ast_rule(r, file_path),
+                    "ast",
+                )
+        else:
+            sys.stderr.write(
+                "bully: engine:ast rules matched but ast-grep not on PATH; skipping. "
+                f"{_AST_GREP_INSTALL_HINT}\n"
+            )
+            for rule in ast_rules:
+                rule_records.append(
+                    {
+                        "id": rule.id,
+                        "engine": "ast",
+                        "verdict": "skipped",
+                        "severity": rule.severity,
+                        "reason": "ast-grep-not-installed",
+                    }
+                )
+
     # Can't-match filters for semantic rules.
     dispatched_semantic: list[Rule] = []
+    semantic_skipped: list[dict] = []
     for rule in semantic_rules:
         ok, reason = _can_match_diff(rule, diff)
         if ok:
@@ -1059,6 +1594,7 @@ def run_pipeline(
                 }
             )
         else:
+            semantic_skipped.append({"rule": rule.id, "reason": reason})
             if log_path is not None:
                 _append_record(
                     log_path,
@@ -1075,15 +1611,26 @@ def run_pipeline(
 
     blocking = [v for v in all_violations if v.severity == "error"]
 
+    def _decorate(result: dict) -> dict:
+        if not include_skipped:
+            return result
+        result["semantic_skipped"] = list(semantic_skipped)
+        result["rules_evaluated"] = _explain_rules_evaluated(
+            rule_records, semantic_skipped, dispatched_semantic
+        )
+        return result
+
     if blocking:
-        return flush(
-            "blocked",
-            {
-                "status": "blocked",
-                "file": file_path,
-                "violations": [asdict(v) for v in all_violations],
-                "passed": passed_checks,
-            },
+        return _decorate(
+            flush(
+                "blocked",
+                {
+                    "status": "blocked",
+                    "file": file_path,
+                    "violations": [asdict(v) for v in all_violations],
+                    "passed": passed_checks,
+                },
+            )
         )
 
     if dispatched_semantic:
@@ -1093,12 +1640,92 @@ def run_pipeline(
             result["write_content"] = "truncated"
         if all_violations:
             result["warnings"] = [asdict(v) for v in all_violations]
-        return flush("evaluate", result)
+        return _decorate(flush("evaluate", result))
 
     result = {"status": "pass", "file": file_path, "passed": passed_checks}
     if all_violations:
         result["warnings"] = [asdict(v) for v in all_violations]
-    return flush("pass", result)
+    return _decorate(flush("pass", result))
+
+
+def _explain_rules_evaluated(
+    rule_records: list[dict],
+    semantic_skipped: list[dict],
+    dispatched_semantic: list[Rule],
+) -> list[dict]:
+    """Project the internal `rule_records` into a per-rule verdict line.
+
+    Verdicts: `fire` (deterministic violation), `pass` (deterministic clean
+    or semantic dispatched-no-violation), `skipped` (can't-match heuristic
+    or ast-grep missing), `dispatched` (semantic rule sent to the evaluator).
+    """
+    dispatched_ids = {r.id for r in dispatched_semantic}
+    out: list[dict] = []
+    for rec in rule_records:
+        rule_id = rec.get("id", "")
+        engine = rec.get("engine", "")
+        record_verdict = rec.get("verdict", "")
+        if record_verdict == "violation":
+            out.append({"rule": rule_id, "engine": engine, "verdict": "fire"})
+        elif record_verdict == "pass":
+            out.append({"rule": rule_id, "engine": engine, "verdict": "pass"})
+        elif record_verdict == "evaluate_requested":
+            out.append(
+                {
+                    "rule": rule_id,
+                    "engine": engine,
+                    "verdict": "dispatched" if rule_id in dispatched_ids else "pass",
+                }
+            )
+        elif record_verdict == "skipped":
+            out.append(
+                {
+                    "rule": rule_id,
+                    "engine": engine,
+                    "verdict": "skipped",
+                    "reason": rec.get("reason", ""),
+                }
+            )
+    for skip in semantic_skipped:
+        out.append(
+            {
+                "rule": skip["rule"],
+                "engine": "semantic",
+                "verdict": "skipped",
+                "reason": skip["reason"],
+            }
+        )
+    return out
+
+
+def _print_explain(result: dict, file_path: str) -> None:
+    """Render the --explain output: one line per rule in scope.
+
+    Falls back to a clear one-liner when the result has a non-evaluating
+    status (skipped, untrusted, no rules in scope) so authors aren't left
+    staring at silence.
+    """
+    status = result.get("status", "")
+    print(f"file: {file_path}")
+    print(f"status: {status}")
+    if status == "skipped":
+        print(f"  pipeline skipped (reason: {result.get('reason', 'unknown')})")
+        return
+    if status == "untrusted":
+        print(f"  config not trusted on this machine ({result.get('trust_detail', '')})")
+        return
+    rules = result.get("rules_evaluated", [])
+    if not rules:
+        print("  no rules matched the file's scope")
+        return
+    for r in rules:
+        verdict = r.get("verdict", "")
+        rule_id = r.get("rule", "")
+        engine = r.get("engine", "")
+        if verdict == "skipped":
+            print(f"  [{engine}] {rule_id}: skipped ({r.get('reason', '')})")
+        else:
+            print(f"  [{engine}] {rule_id}: {verdict}")
 
 
 def _was_write_truncated_for_path(file_path: str) -> bool:
@@ -1171,9 +1798,44 @@ def _build_semantic_prompt(payload: dict) -> str:
     return "\n".join(lines)
 
 
+# Subcommand verbs accepted as the first argv element. Each maps to either a
+# flag or a small argv rewrite. Keeps the legacy `--validate`/`--doctor` flags
+# and the legacy positional `<config> <file>` form (used by hook.sh) working.
+_SUBCOMMAND_FLAGS = {
+    "validate": "--validate",
+    "doctor": "--doctor",
+    "show-resolved-config": "--show-resolved-config",
+    "baseline-init": "--baseline-init",
+    "trust": "--trust",
+}
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """Translate `bully <verb> ...` shorthand into the underlying flag form.
+
+    - `validate` / `doctor` / `show-resolved-config` / `baseline-init` / `trust`
+      become their `--verb` flag equivalents.
+    - `lint <path>` becomes `--file <path>` (the rest of argv is preserved).
+    - Anything else passes through unchanged so legacy positional and flag
+      invocations keep working.
+    """
+    if not argv:
+        return argv
+    head = argv[0]
+    if head in _SUBCOMMAND_FLAGS:
+        return [_SUBCOMMAND_FLAGS[head], *argv[1:]]
+    if head == "lint":
+        rest = argv[1:]
+        if rest and not rest[0].startswith("-"):
+            return ["--file", rest[0], *rest[1:]]
+        return rest
+    return argv
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
+    argv = _normalize_argv(argv)
     parser = argparse.ArgumentParser(
-        prog="pipeline.py",
+        prog="bully",
         description="Agentic Lint pipeline. Runs script and semantic rules for a file.",
     )
     parser.add_argument("positional", nargs="*", help=argparse.SUPPRESS)
@@ -1227,6 +1889,23 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Append a semantic_verdict telemetry record.",
     )
     parser.add_argument("--verdict", choices=("pass", "violation"), default=None)
+    parser.add_argument(
+        "--trust",
+        action="store_true",
+        help="Allow the given --config to execute rules on this machine. "
+        "Records a SHA256 checksum; edits to the config re-require --trust.",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="With --trust: re-approve a changed config. Without --trust: no-op.",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print per-rule verdict (fire/pass/skipped <reason>/dispatched) for "
+        "every rule in scope, instead of the JSON pipeline result.",
+    )
     args = parser.parse_args(argv)
     # Back-compat: accept positional args (used by hook)
     if args.positional and not args.config:
@@ -1252,6 +1931,13 @@ def _cmd_validate(config_path: str | None) -> int:
     print(f"[OK] parsed {len(rules)} rule(s) from {path}")
     for r in rules:
         print(f"  - {r.id}  engine={r.engine}  severity={r.severity}  scope={list(r.scope)}")
+    ast_rule_ids = [r.id for r in rules if r.engine == "ast"]
+    if ast_rule_ids and not ast_grep_available():
+        print(
+            f"[WARN] {len(ast_rule_ids)} engine:ast rule(s) will be skipped at runtime: "
+            f"ast-grep not on PATH. {_AST_GREP_INSTALL_HINT}",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -1285,12 +1971,40 @@ def _cmd_doctor() -> int:
         ok = False
 
     # Config parses
+    parsed_rules: list[Rule] = []
     if cfg.is_file():
         try:
-            rules = parse_config(str(cfg))
-            print(f"[OK] config parses ({len(rules)} rules)")
+            parsed_rules = parse_config(str(cfg))
+            print(f"[OK] config parses ({len(parsed_rules)} rules)")
         except ConfigError as e:
             print(f"[FAIL] config parse error: {e}")
+            ok = False
+
+    # Trust status for the local config (machine-local, not committed).
+    if cfg.is_file():
+        status, detail = _trust_status(str(cfg))
+        if status == "trusted":
+            print(f"[OK] config trusted on this machine ({detail})")
+        elif status == "mismatch":
+            print(
+                f"[WARN] config trusted but checksum changed: {detail}. Run: bully trust --refresh"
+            )
+        else:
+            print(
+                f"[WARN] config not trusted on this machine ({detail}). "
+                "Rules will not run until you run: bully trust"
+            )
+
+    # ast-grep availability (only matters if engine:ast rules exist)
+    ast_rule_count = sum(1 for r in parsed_rules if r.engine == "ast")
+    if ast_rule_count > 0:
+        if ast_grep_available():
+            print(f"[OK] ast-grep on PATH ({ast_rule_count} engine:ast rule(s))")
+        else:
+            print(
+                f"[FAIL] {ast_rule_count} engine:ast rule(s) need ast-grep. "
+                f"{_AST_GREP_INSTALL_HINT}"
+            )
             ok = False
 
     # PostToolUse hook wired in .claude/settings.json
@@ -1380,11 +2094,12 @@ def _cmd_baseline_init(config_path: str | None, glob: str | None) -> int:
     root = cfg_abs.parent
     if not glob:
         glob = "**/*"
+    extra_skip = effective_skip_patterns(str(cfg_abs))[len(SKIP_PATTERNS) :]
     entries: list[dict] = []
     for candidate in root.glob(glob):
         if not candidate.is_file():
             continue
-        if _path_matches_skip(str(candidate)):
+        if _path_matches_skip(str(candidate), extra_patterns=extra_skip):
             continue
         try:
             result = run_pipeline(str(cfg_abs), str(candidate), "")
@@ -1471,6 +2186,15 @@ def _hook_mode() -> int:
         return 0
 
     status = result.get("status", "pass")
+    if status == "untrusted":
+        sys.stderr.write(
+            _untrusted_stderr(
+                result.get("config", str(config)),
+                result.get("trust_status", "untrusted"),
+                result.get("trust_detail", ""),
+            )
+        )
+        return 0
     if status == "blocked":
         sys.stderr.write(_format_blocked_stderr(result))
         return 2
@@ -1495,6 +2219,8 @@ def main() -> None:
     args = _parse_args(sys.argv[1:])
 
     # Subcommands.
+    if args.trust:
+        sys.exit(_cmd_trust(args.config, refresh=args.refresh))
     if args.validate:
         sys.exit(_cmd_validate(args.config))
     if args.doctor:
@@ -1515,12 +2241,17 @@ def main() -> None:
     if args.hook_mode:
         sys.exit(_hook_mode())
 
+    # Default config to ./.bully.yml when a target file is given but no
+    # config is specified -- lets `bully lint src/foo.py` work standalone.
+    if args.file_path and not args.config and os.path.exists(".bully.yml"):
+        args.config = ".bully.yml"
+
     if not args.config or not args.file_path:
         print(
             json.dumps(
                 {
-                    "error": "Usage: pipeline.py --config <path> --file <path> "
-                    "(or positional: pipeline.py <config> <file>)"
+                    "error": "Usage: bully lint <file> [--config <path>] "
+                    "(or pipeline.py <config> <file>)"
                 }
             ),
             file=sys.stderr,
@@ -1563,10 +2294,15 @@ def main() -> None:
             file_path,
             diff,
             rule_filter=set(args.rule) if args.rule else None,
+            include_skipped=args.explain,
         )
     except ConfigError as e:
         print(json.dumps({"status": "error", "error": str(e)}), file=sys.stderr)
         sys.exit(1)
+
+    if args.explain:
+        _print_explain(result, file_path)
+        return
 
     if args.print_prompt:
         if result.get("status") == "evaluate":
@@ -1585,6 +2321,15 @@ def main() -> None:
 
     print(json.dumps(result, indent=2))
 
+    if result.get("status") == "untrusted":
+        sys.stderr.write(
+            _untrusted_stderr(
+                result.get("config", config_path),
+                result.get("trust_status", "untrusted"),
+                result.get("trust_detail", ""),
+            )
+        )
+        sys.exit(0)
     if result.get("status") == "blocked":
         sys.stderr.write(_format_blocked_stderr(result))
         sys.exit(2)
