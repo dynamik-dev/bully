@@ -1,0 +1,281 @@
+rules:
+  # --- PHP baselines ---
+
+  strict-types:
+    description: >
+      All PHP files in app/, database/, routes/, and tests/ must declare
+      strict_types=1 at the top of the file.
+    engine: script
+    scope: ["app/**/*.php", "database/**/*.php", "routes/**/*.php", "tests/**/*.php"]
+    severity: error
+    script: "head -5 {file} | grep -q 'declare(strict_types=1)' || exit 1"
+
+  no-compact:
+    description: >
+      Do not use compact(). Prefer explicit array keys so refactors are
+      greppable and static analysis can follow variables.
+    engine: ast
+    scope: ["app/**/*.php", "database/**/*.php", "tests/**/*.php"]
+    severity: error
+    pattern: "compact($$$ARGS)"
+
+  no-db-facade:
+    description: >
+      Do not use the DB:: facade in application code. Prefer Eloquent
+      (Model::query(), scopes, relationships). Migrations and seeders
+      are exempt because they need raw SQL and Schema operations.
+    engine: ast
+    scope: ["app/**/*.php"]
+    severity: error
+    pattern: "DB::$M($$$)"
+
+  no-event-helper:
+    description: >
+      Do not use the event() helper. Use Event::dispatch() so static
+      analysis can follow the dispatched event class. Method calls
+      like $this->event() are unaffected because they are different
+      AST nodes.
+    engine: ast
+    scope: ["app/**/*.php"]
+    severity: error
+    pattern: "event($$$)"
+
+  full-type-hints:
+    description: >
+      Every method must declare parameter types and an explicit return
+      type. PHPDoc is optional except when it carries info the type
+      system cannot express (array shapes, generics).
+    engine: semantic
+    scope: ["app/**/*.php", "database/**/*.php", "tests/**/*.php"]
+    severity: error
+
+  inline-single-use-vars:
+    description: >
+      Inline variables that are only referenced once after assignment,
+      unless the variable name significantly clarifies intent that
+      would be lost by inlining.
+    engine: semantic
+    scope: ["app/**/*.php"]
+    severity: error
+
+  extract-complex-logic:
+    description: >
+      If a method contains a conditional block or loop body longer
+      than 8 lines that performs a distinct sub-task, extract it to
+      a named helper method. Long inline blocks bury intent and make
+      the parent method hard to scan.
+    engine: semantic
+    scope: ["app/**/*.php"]
+    severity: warning
+
+  pint-formatting:
+    description: >
+      PHP code must pass Laravel Pint formatting using the project's
+      pint.json config. Run `vendor/bin/pint --dirty --format agent`
+      to fix any reported issues.
+    engine: script
+    scope: ["app/**/*.php", "database/**/*.php", "tests/**/*.php", "routes/**/*.php"]
+    severity: warning
+    script: "vendor/bin/pint --test {file} >/dev/null 2>&1"
+
+  no-orchestration-labels:
+    description: >
+      No sprint, wave, task, phase, v1, v2, step-N, or similar
+      orchestration labels in class names, file names, method names,
+      or comments. Source code must not contain project management
+      artifacts.
+    engine: semantic
+    scope: ["app/**/*.php", "resources/js/**/*.{ts,tsx}"]
+    severity: error
+
+  # --- Laravel / project conventions ---
+
+  no-json-api-routes:
+    description: >
+      This is an Inertia app. Do not build JSON API endpoints with
+      response()->json() in web routes. Use Inertia::render() to pass
+      data to pages. Exception: endpoints explicitly documented as
+      XHR/webhook handlers.
+    engine: semantic
+    scope: ["app/**/*.php"]
+    severity: error
+
+  gate-foruser-in-actions:
+    description: >
+      Actions with an explicit User parameter must authorize via
+      Gate::forUser($user)->authorize(...). Never call bare
+      Gate::authorize() -- that checks the currently-authed user, not
+      the action's User argument, and is a silent security hole.
+    engine: semantic
+    scope: ["app/**/Actions/*.php", "app/Groups/*.php", "app/Posts/*.php", "app/Comments/*.php", "app/Reactions/*.php", "app/Reports/*.php"]
+    severity: error
+
+  capabilities-not-identity:
+    description: >
+      Authorize through Marque capabilities (Gate/policies/
+      $user->can()). Do not gate actions with identity or membership
+      checks like $group->owner_id === $user->id or
+      $group->hasMember($user). Capability checks compose; identity
+      checks do not.
+    engine: semantic
+    scope: ["app/**/*.php"]
+    severity: error
+
+  # --- Tests ---
+
+  pest-not-phpunit:
+    description: >
+      Tests must use Pest function syntax (test(), it(), describe()).
+      Do not declare any class that extends another in test files --
+      the TestCase binding is configured globally in tests/Pest.php
+      and Pest tests are plain functions, not classes.
+    engine: ast
+    scope: ["tests/Feature/**/*.php", "tests/Unit/**/*.php", "tests/Browser/**/*.php"]
+    severity: error
+    pattern: "class $NAME extends $BASE { $$$ }"
+
+  feature-tests-refresh-database:
+    description: >
+      tests/Pest.php must register RefreshDatabase against both the
+      Feature and Browser test directories so DB state is reset
+      between tests. Removing either binding causes test pollution
+      and flaky CI. Per-file RefreshDatabase usage is unnecessary
+      because this global binding covers it.
+    engine: script
+    scope: ["tests/Pest.php"]
+    severity: error
+    script: "grep -q 'RefreshDatabase' {file} && grep -q \"in('Feature')\" {file} && grep -q \"in('Browser')\" {file}"
+
+  # --- TypeScript / React ---
+
+  no-console-log:
+    description: >
+      Do not leave console.log calls in committed code. console.warn
+      and console.error are allowed because they signal real problems.
+    engine: ast
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+    pattern: "console.log($$$)"
+
+  no-any-cast:
+    description: >
+      Do not use `as any` casts. They silence the type checker and
+      hide real bugs. Use a precise type, `unknown` plus a narrowing
+      check, or a generic if the value is genuinely polymorphic.
+    engine: ast
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+    pattern: "$EXPR as any"
+
+  no-ts-ignore:
+    description: >
+      Do not use @ts-ignore. Prefer @ts-expect-error with a short
+      comment so the suppression fails loudly once the underlying
+      issue is fixed. Fix the type error instead when possible.
+    engine: script
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+    script: "grep -nE '@ts-ignore' {file} && exit 1 || exit 0"
+
+  no-fetch-call:
+    description: >
+      This is an Inertia app. Do not use fetch() for data loading --
+      Inertia handles this via props. For one-off XHR requests, use
+      Inertia's useHttp hook. Pages load data from Inertia::render()
+      props, not client-side fetch.
+    engine: ast
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+    pattern: "fetch($$$)"
+
+  no-axios-call:
+    description: >
+      Do not use axios for data loading -- Inertia provides useHttp
+      and Form/useForm for XHR. Catches axios.get/post/put/etc. The
+      bare axios(config) form is rare; if you find one, replace it.
+    engine: ast
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+    pattern: "axios.$M($$$)"
+
+  no-raw-anchor-navigation:
+    description: >
+      Use Inertia's <Link> with prefetch for client-side navigation.
+      Do not use <a href="/..."> for in-app links (external links are
+      fine). Raw anchors cause full-page reloads and break SPA state.
+    engine: semantic
+    scope: ["resources/js/**/*.tsx"]
+    severity: error
+
+  prefer-useform:
+    description: >
+      Use Inertia's useForm hook or <Form> component for form
+      submissions. Do not manually wire useState + router.post() when
+      useForm can handle state, errors, processing, and resets.
+    engine: semantic
+    scope: ["resources/js/**/*.tsx"]
+    severity: error
+
+  inertia-page-layout-object:
+    description: >
+      When a page declares `Page.layout = { ... }` (an object literal,
+      not a function or component), it MUST include at least one
+      non-JSX field such as `breadcrumbs` or `title`. An object whose
+      values are all JSX gets mis-detected by Inertia as a named-
+      layout map and breaks the layout system. Use a function/
+      component layout, or include a non-JSX key alongside rightTray.
+    engine: semantic
+    scope: ["resources/js/pages/**/*.tsx"]
+    severity: error
+
+  no-hardcoded-routes:
+    description: >
+      Use Wayfinder route functions imported from @/actions or
+      @/routes instead of hardcoded URL strings. Hardcoded URLs skip
+      type checking and break silently on route renames.
+    engine: semantic
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: warning
+
+  prefer-derived-state:
+    description: >
+      If a piece of state can be computed from existing props or
+      state on every render, derive it inline (or with useMemo when
+      expensive) instead of storing it in useState and syncing with
+      useEffect. Redundant state is the largest source of React bugs.
+    engine: semantic
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+
+  proper-dependency-arrays:
+    description: >
+      Every value from component scope that is used inside useEffect,
+      useMemo, or useCallback must appear in the dependency array.
+      Omitting a dep to "avoid re-runs" hides stale-closure bugs.
+    engine: semantic
+    scope: ["resources/js/**/*.{ts,tsx}"]
+    severity: error
+
+  no-index-as-key:
+    description: >
+      Do not use the array index as the `key` prop when rendering
+      lists whose contents can reorder, insert, or delete. Use a
+      stable identifier from the item itself.
+    engine: semantic
+    scope: ["resources/js/**/*.tsx"]
+    severity: warning
+
+  # --- Architecture ---
+
+  pest-arch-tests:
+    description: >
+      Domain architecture invariants (actions use AsAction, models extend
+      Eloquent Model, resources expose a static make() method, no new
+      traditional controllers) are enforced by the Pest arch suite in
+      tests/Feature/ArchTest.php. Any edit to a domain Action, Model,
+      Resource, or to the arch test itself re-runs the suite to catch
+      drift before it hits CI.
+    engine: script
+    scope: ["app/**/Actions/*.php", "app/**/Models/*.php", "app/**/Resources/*.php", "app/Http/Controllers/**/*.php", "tests/Feature/ArchTest.php"]
+    severity: error
+    script: "php artisan test --compact tests/Feature/ArchTest.php >/dev/null 2>&1"

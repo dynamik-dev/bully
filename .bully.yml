@@ -108,3 +108,17 @@ rules:
     scope: "*.py"
     severity: error
     script: "if command -v ruff >/dev/null 2>&1; then ruff check --force-exclude {file}; elif [ -x .venv/bin/ruff ]; then .venv/bin/ruff check --force-exclude {file}; else echo 'bully: ruff not found; pip install -e .[dev]' >&2; exit 0; fi"
+
+  ruff-format-clean:
+    description: >
+      Python files must be ruff-formatted. `ruff check` and `ruff format`
+      are separate subcommands -- ruff-clean above runs the linter, this
+      rule runs the formatter in --check mode. Without both, files that
+      pass lint but need reformatting (multi-line expressions ruff would
+      collapse, trailing-comma drift) sneak through and trip CI's
+      `ruff format --check .` step. Fix with `ruff format {file}`. Same
+      PATH/venv fallback as ruff-clean.
+    engine: script
+    scope: "*.py"
+    severity: error
+    script: "if command -v ruff >/dev/null 2>&1; then ruff format --check --force-exclude {file}; elif [ -x .venv/bin/ruff ]; then .venv/bin/ruff format --check --force-exclude {file}; else exit 0; fi"

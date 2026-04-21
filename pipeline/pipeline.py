@@ -790,6 +790,13 @@ def _scope_glob_matches(pattern: str, file_path: str) -> bool:
     Simple patterns without `**` (the common case) fall back to
     `PurePath.match`, which handles right-anchored suffix matches like
     `*.ts` matching `src/foo.ts`.
+
+    The `**` path is also right-anchored: the hook always passes absolute
+    file paths (e.g. `/Users/alice/proj/app/foo.php`) and rule scopes are
+    written as repo-relative globs (e.g. `app/**/*.php`). We retry the
+    match starting at every path-parts offset so the relative glob lines
+    up with the repo-relative suffix of the absolute path. This mirrors
+    the 0.3.x behaviour (`PurePath.match`) that 0.4.0's rewrite broke.
     """
     if "**" not in pattern:
         try:
@@ -809,10 +816,15 @@ def _scope_glob_matches(pattern: str, file_path: str) -> bool:
         trimmed = raw.strip("/")
         segments.append(trimmed.split("/") if trimmed else [])
 
-    # Anchored prefix: the first segment must match starting at path_parts[0]
-    # UNLESS the pattern starts with `**/` (i.e. segments[0] is empty), in
-    # which case `**` can absorb zero-or-more leading path parts.
-    return _match_glob_segments(segments, 0, path_parts, 0)
+    # Try matching with the first segment anchored at every possible start.
+    # This makes the pattern right-anchored against the full path (the 0.3.x
+    # semantic) while still consuming every remaining path part at the end
+    # — so `app/**/*.php` matches `/Users/…/proj/app/foo.php` but does NOT
+    # over-match partial filenames within a segment.
+    for start in range(len(path_parts) + 1):
+        if _match_glob_segments(segments, 0, path_parts, start):
+            return True
+    return False
 
 
 def _segment_matches(globs: list[str], parts: tuple[str, ...], start: int) -> bool:
