@@ -77,7 +77,9 @@ Or via env (wins over config):
 BULLY_MAX_WORKERS=2 git commit
 ```
 
-Set `max_workers: 1` to restore fully serial execution if a rule script has side effects that require exclusive access to a resource.
+Set `max_workers: 1` to restore fully serial execution if a rule script has side effects that require exclusive access to a resource. Files that match only a single rule skip the pool and run inline — the knob only matters when two or more deterministic rules apply to the same file.
+
+If a rule's evaluator itself raises a Python exception (not just a non-zero shell exit), bully now catches it and emits a blocking `severity=error` violation with description `internal error: <ExcType>: <msg>`. The other rules in the phase still run to completion, so one bad rule cannot take down the whole check.
 
 ## How it works
 

@@ -210,6 +210,16 @@ PostToolUse fires (Edit or Write)
        - script rules shell out (`{file}` substituted in)
        - ast rules invoke ast-grep with rule.pattern
          (skipped with stderr hint if ast-grep is missing)
+       - rules in a single phase run concurrently on a thread pool
+         (default workers = min(8, cpu_count or 4); configurable
+         via execution.max_workers in .bully.yml or the
+         BULLY_MAX_WORKERS env var). Single-rule phases skip the
+         pool and run inline. Declaration order is preserved in
+         all outputs regardless of completion order.
+       - per-rule Python exceptions are isolated: they become a
+         blocking severity=error violation with description
+         "internal error: <ExcType>: <msg>" and do not abort the
+         other rules in the phase.
        |
        +-- Any error-severity violations?
        |     --> print text to stderr

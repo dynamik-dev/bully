@@ -67,11 +67,12 @@ Per-rule:
 | Field | Description |
 |-------|-------------|
 | `id` | Rule id from `.bully.yml`. |
-| `engine` | `script` or `semantic`. |
+| `engine` | `script`, `ast`, or `semantic`. |
 | `verdict` | `pass`, `violation`, or `evaluate_requested`. |
 | `severity` | `error` or `warning`. |
-| `line` | Line number of the first violation (script rules only). |
-| `latency_ms` | Per-rule latency (script rules only). |
+| `line` | Line number of the first violation (deterministic rules only). |
+| `latency_ms` | Per-rule latency (deterministic rules only). |
+| `error` | `true` when the rule itself raised an exception during evaluation (converted to a blocking `severity=error` violation). Omitted otherwise. |
 
 ### Verdict meanings
 
