@@ -1754,7 +1754,12 @@ def run_pipeline(
 
     # Imported here (not top-level) to avoid a circular import: rule_runner
     # imports Rule, Violation, _is_baselined, _line_has_disable from pipeline.
-    from rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
+    # Dual-mode: package form first (installed `bully` entry point), fall back
+    # to bare form (test sys.path convention, direct `./bully` shell wrapper).
+    try:
+        from pipeline.rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
+    except ImportError:
+        from rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
 
     max_workers = resolve_max_workers(config_path)
     rule_ctx = RuleContext(

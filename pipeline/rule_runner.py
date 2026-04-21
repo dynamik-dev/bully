@@ -12,7 +12,15 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
-from pipeline import Rule, Violation, _is_baselined, _line_has_disable
+# Dual-mode import: works both when `pipeline/` is on sys.path (test / direct
+# `./bully` entry) AND when `pipeline` is imported as a proper package (e.g.
+# via the installed `bully` console script, which resolves to
+# `pipeline.pipeline:main`). The fallback preserves the historical test
+# convention without breaking installed execution.
+try:
+    from pipeline.pipeline import Rule, Violation, _is_baselined, _line_has_disable
+except ImportError:
+    from pipeline import Rule, Violation, _is_baselined, _line_has_disable
 
 
 @dataclass(frozen=True)
