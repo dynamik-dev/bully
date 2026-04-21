@@ -104,7 +104,7 @@ def test_pipeline_script_block_skips_semantic():
 def test_parallel_script_rules_finish_under_serial_time(monkeypatch):
     # Serial would be ~4 * 0.3s = 1.2s. Parallel + subprocess startup should
     # fit under _PARALLEL_MAX_SECONDS even on slow CI runners.
-    monkeypatch.delenv("BULLY_MAX_WORKERS", raising=False)
+    monkeypatch.setenv("BULLY_MAX_WORKERS", "4")
     t0 = _time.perf_counter()
     result = run_pipeline(
         str(FIXTURES / "parallel-config.yml"),
@@ -122,7 +122,7 @@ def test_parallel_script_rules_finish_under_serial_time(monkeypatch):
 
 
 def test_parallel_rule_records_preserve_declaration_order(monkeypatch):
-    monkeypatch.delenv("BULLY_MAX_WORKERS", raising=False)
+    monkeypatch.setenv("BULLY_MAX_WORKERS", "4")
     result = run_pipeline(
         str(FIXTURES / "parallel-config.yml"),
         str(FIXTURES / "parallel-target.py"),
