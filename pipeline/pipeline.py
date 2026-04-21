@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
@@ -1753,68 +1753,48 @@ def run_pipeline(
     passed_checks: list[str] = []
     baseline = _load_baseline(config_path)
 
-    def _run_deterministic(
-        rule: Rule,
-        executor,
-        engine_label: str,
-    ) -> None:
-        rule_start = time.perf_counter()
-        violations = executor()
-        rule_ms = int((time.perf_counter() - rule_start) * 1000)
+    # Imported here (not top-level) to avoid a circular import: rule_runner
+    # imports Rule, Violation, _is_baselined, _line_has_disable from pipeline.
+    from rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
 
-        if rule.fix_hint:
-            violations = [replace(v, suggestion=v.suggestion or rule.fix_hint) for v in violations]
+    max_workers = resolve_max_workers(config_path)
+    rule_ctx = RuleContext(
+        file_path=file_path,
+        diff=diff,
+        baseline=baseline,
+        config_path=config_path,
+    )
 
-        filtered: list[Violation] = []
-        for v in violations:
-            if _line_has_disable(file_path, v.line, rule.id):
-                continue
-            if _is_baselined(baseline, rule.id, config_path, file_path, v.line):
-                continue
-            filtered.append(v)
-        violations = filtered
+    def _adapter_script(rule, rctx):
+        return execute_script_rule(rule, rctx.file_path, rctx.diff)
 
-        if violations:
-            all_violations.extend(violations)
-            rule_records.append(
-                {
-                    "id": rule.id,
-                    "engine": engine_label,
-                    "verdict": "violation",
-                    "severity": rule.severity,
-                    "line": violations[0].line,
-                    "latency_ms": rule_ms,
-                }
-            )
-        else:
-            passed_checks.append(rule.id)
-            rule_records.append(
-                {
-                    "id": rule.id,
-                    "engine": engine_label,
-                    "verdict": "pass",
-                    "severity": rule.severity,
-                    "latency_ms": rule_ms,
-                }
-            )
+    def _adapter_ast(rule, rctx):
+        return execute_ast_rule(rule, rctx.file_path)
+
+    def _fold(results):
+        for result in results:
+            if result.violations:
+                all_violations.extend(result.violations)
+            else:
+                passed_checks.append(result.rule_id)
+            rule_records.append(result.record)
 
     with phase_timer("script_exec"):
-        for rule in script_rules:
-            _run_deterministic(
-                rule,
-                lambda r=rule: execute_script_rule(r, file_path, diff),
-                "script",
+        if script_rules:
+            _fold(
+                run_rules_parallel(
+                    script_rules, rule_ctx, "script", _adapter_script, max_workers
+                )
             )
 
     with phase_timer("ast_exec"):
         if ast_rules:
             if ast_grep_available():
-                for rule in ast_rules:
-                    _run_deterministic(
-                        rule,
-                        lambda r=rule: execute_ast_rule(r, file_path),
-                        "ast",
+                _fold(
+                    run_rules_parallel(
+                        ast_rules, rule_ctx, "ast", _adapter_ast, max_workers
                     )
+                )
             else:
                 sys.stderr.write(
                     "bully: engine:ast rules matched but ast-grep not on PATH; skipping. "
