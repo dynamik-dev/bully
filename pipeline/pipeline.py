@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
@@ -39,7 +39,7 @@ VALID_RULE_FIELDS = {
     "pattern",
     "language",
 }
-VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip"}
+VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip", "execution"}
 
 # User-global ignore file: one glob per line, blank lines and `#` comments
 # allowed. Loaded by `effective_skip_patterns` and merged with the built-in
@@ -255,6 +255,7 @@ class _ParsedConfig:
     extends: list[str] = field(default_factory=list)
     skip: list[str] = field(default_factory=list)
     schema_version: int | None = None
+    max_workers: int | None = None
 
 
 def _parse_single_file(path: str) -> _ParsedConfig:
@@ -274,7 +275,9 @@ def _parse_single_file(path: str) -> _ParsedConfig:
     in_rules_block = False
     in_extends_block = False
     in_skip_block = False
+    in_execution_block = False
     skip: list[str] = []
+    max_workers: int | None = None
 
     def finalize_rule() -> None:
         nonlocal current_id, fields, field_lines
@@ -334,6 +337,31 @@ def _parse_single_file(path: str) -> _ParsedConfig:
         elif in_skip_block:
             in_skip_block = False
 
+        # Execution-block continuation: `<key>: <value>` at indent 2.
+        if in_execution_block and indent >= 2 and ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value_raw = value.strip()
+            if key != "max_workers":
+                raise ConfigError(
+                    f"unknown execution field '{key}' (allowed: max_workers)",
+                    lineno,
+                )
+            parsed_val = _parse_scalar(value_raw)
+            try:
+                n = int(parsed_val)
+                if n <= 0:
+                    raise ValueError
+            except (TypeError, ValueError) as e:
+                raise ConfigError(
+                    f"max_workers must be a positive integer, got {parsed_val!r}",
+                    lineno,
+                ) from e
+            max_workers = n
+            continue
+        elif in_execution_block:
+            in_execution_block = False
+
         # Top-level key (indent 0).
         if indent == 0:
             if current_id is not None:
@@ -381,6 +409,13 @@ def _parse_single_file(path: str) -> _ParsedConfig:
                         'skip must be a list like ["_build/**", "vendor/**"]',
                         lineno,
                     )
+            elif key == "execution":
+                if value_raw != "":
+                    raise ConfigError(
+                        "execution must be followed by an indented block",
+                        lineno,
+                    )
+                in_execution_block = True
             # `rules:` handled above; anything else would have raised already.
             continue
 
@@ -446,6 +481,7 @@ def _parse_single_file(path: str) -> _ParsedConfig:
         extends=extends,
         skip=skip,
         schema_version=schema_version,
+        max_workers=max_workers,
     )
 
 
@@ -576,6 +612,35 @@ def parse_config(path: str) -> list[Rule]:
     """
     resolved = _load_with_extends(path, visited=[])
     return resolved
+
+
+def resolve_max_workers(config_path: str) -> int:
+    """Resolve concurrent-rule worker count.
+
+    Precedence (highest first):
+      1. BULLY_MAX_WORKERS env var (positive int)
+      2. execution.max_workers in the top-level .bully.yml
+      3. Default: min(8, os.cpu_count() or 4)
+
+    Invalid env values (non-int, zero, negative) silently fall through
+    to the config / default. Config-level invalid values were already
+    rejected at parse time by _parse_single_file.
+    """
+    env_raw = os.environ.get("BULLY_MAX_WORKERS")
+    if env_raw is not None:
+        try:
+            n = int(env_raw)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    try:
+        parsed = _parse_single_file(config_path)
+        if parsed.max_workers is not None:
+            return parsed.max_workers
+    except ConfigError:
+        pass  # parse errors surface when the caller invokes parse_config directly
+    return min(8, os.cpu_count() or 4)
 
 
 def _load_with_extends(path: str, visited: list[str]) -> list[Rule]:
@@ -1687,68 +1752,47 @@ def run_pipeline(
     passed_checks: list[str] = []
     baseline = _load_baseline(config_path)
 
-    def _run_deterministic(
-        rule: Rule,
-        executor,
-        engine_label: str,
-    ) -> None:
-        rule_start = time.perf_counter()
-        violations = executor()
-        rule_ms = int((time.perf_counter() - rule_start) * 1000)
+    # Imported here (not top-level) to avoid a circular import: rule_runner
+    # imports Rule, Violation, _is_baselined, _line_has_disable from pipeline.
+    # Dual-mode: package form first (installed `bully` entry point), fall back
+    # to bare form (test sys.path convention, direct `./bully` shell wrapper).
+    try:
+        from pipeline.rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
+    except ImportError:
+        from rule_runner import RuleContext, run_rules_parallel  # noqa: PLC0415
 
-        if rule.fix_hint:
-            violations = [replace(v, suggestion=v.suggestion or rule.fix_hint) for v in violations]
+    max_workers = resolve_max_workers(config_path)
+    rule_ctx = RuleContext(
+        file_path=file_path,
+        diff=diff,
+        baseline=baseline,
+        config_path=config_path,
+    )
 
-        filtered: list[Violation] = []
-        for v in violations:
-            if _line_has_disable(file_path, v.line, rule.id):
-                continue
-            if _is_baselined(baseline, rule.id, config_path, file_path, v.line):
-                continue
-            filtered.append(v)
-        violations = filtered
+    def _adapter_script(rule, rctx):
+        return execute_script_rule(rule, rctx.file_path, rctx.diff)
 
-        if violations:
-            all_violations.extend(violations)
-            rule_records.append(
-                {
-                    "id": rule.id,
-                    "engine": engine_label,
-                    "verdict": "violation",
-                    "severity": rule.severity,
-                    "line": violations[0].line,
-                    "latency_ms": rule_ms,
-                }
-            )
-        else:
-            passed_checks.append(rule.id)
-            rule_records.append(
-                {
-                    "id": rule.id,
-                    "engine": engine_label,
-                    "verdict": "pass",
-                    "severity": rule.severity,
-                    "latency_ms": rule_ms,
-                }
-            )
+    def _adapter_ast(rule, rctx):
+        return execute_ast_rule(rule, rctx.file_path)
+
+    def _fold(results):
+        for result in results:
+            if result.violations:
+                all_violations.extend(result.violations)
+            else:
+                passed_checks.append(result.rule_id)
+            rule_records.append(result.record)
 
     with phase_timer("script_exec"):
-        for rule in script_rules:
-            _run_deterministic(
-                rule,
-                lambda r=rule: execute_script_rule(r, file_path, diff),
-                "script",
+        if script_rules:
+            _fold(
+                run_rules_parallel(script_rules, rule_ctx, "script", _adapter_script, max_workers)
             )
 
     with phase_timer("ast_exec"):
         if ast_rules:
             if ast_grep_available():
-                for rule in ast_rules:
-                    _run_deterministic(
-                        rule,
-                        lambda r=rule: execute_ast_rule(r, file_path),
-                        "ast",
-                    )
+                _fold(run_rules_parallel(ast_rules, rule_ctx, "ast", _adapter_ast, max_workers))
             else:
                 sys.stderr.write(
                     "bully: engine:ast rules matched but ast-grep not on PATH; skipping. "

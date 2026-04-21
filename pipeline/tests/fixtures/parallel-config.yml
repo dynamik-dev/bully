@@ -1,0 +1,25 @@
+rules:
+  sleep-a:
+    description: "Sleeps 0.3s then passes"
+    engine: script
+    scope: "*.py"
+    severity: warning
+    script: "sleep 0.3 && exit 0"
+  sleep-b:
+    description: "Sleeps 0.3s then passes"
+    engine: script
+    scope: "*.py"
+    severity: warning
+    script: "sleep 0.3 && exit 0"
+  sleep-c:
+    description: "Sleeps 0.3s then passes"
+    engine: script
+    scope: "*.py"
+    severity: warning
+    script: "sleep 0.3 && exit 0"
+  sleep-d:
+    description: "Sleeps 0.3s then passes"
+    engine: script
+    scope: "*.py"
+    severity: warning
+    script: "sleep 0.3 && exit 0"

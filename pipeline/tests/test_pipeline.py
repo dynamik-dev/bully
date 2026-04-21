@@ -1,6 +1,7 @@
 """Tests for semantic payload builder and full pipeline orchestration."""
 
 import sys
+import time as _time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -8,6 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline import Rule, build_semantic_payload, run_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Parallelism integration test: 4 rules x 0.3s sleep = 1.2s serial.
+# Parallel + subprocess spawn overhead caps at PARALLEL_MAX_SECONDS.
+# Lower bound guards against a mocked clock silently passing the test.
+_PARALLEL_SLEEP_SECONDS = 0.3
+_PARALLEL_MAX_SECONDS = 1.5
+_PARALLEL_MIN_SECONDS = _PARALLEL_SLEEP_SECONDS * 0.9
 
 
 def test_payload_includes_file_and_diff():
@@ -91,3 +99,40 @@ def test_pipeline_script_block_skips_semantic():
     )
     assert result["status"] == "blocked"
     assert "evaluate" not in result
+
+
+def test_parallel_script_rules_finish_under_serial_time(monkeypatch):
+    # Serial would be ~4 * 0.3s = 1.2s. Parallel + subprocess startup should
+    # fit under _PARALLEL_MAX_SECONDS even on slow CI runners.
+    monkeypatch.setenv("BULLY_MAX_WORKERS", "4")
+    t0 = _time.perf_counter()
+    result = run_pipeline(
+        str(FIXTURES / "parallel-config.yml"),
+        str(FIXTURES / "parallel-target.py"),
+        "",
+    )
+    elapsed = _time.perf_counter() - t0
+    assert result["status"] == "pass"
+    assert elapsed < _PARALLEL_MAX_SECONDS, (
+        f"parallel wall time {elapsed:.2f}s exceeded threshold {_PARALLEL_MAX_SECONDS}s"
+    )
+    assert elapsed >= _PARALLEL_MIN_SECONDS, (
+        f"wall time {elapsed:.2f}s below sleep floor — mocked clock?"
+    )
+
+
+def test_parallel_rule_records_preserve_declaration_order(monkeypatch):
+    monkeypatch.setenv("BULLY_MAX_WORKERS", "4")
+    result = run_pipeline(
+        str(FIXTURES / "parallel-config.yml"),
+        str(FIXTURES / "parallel-target.py"),
+        "",
+        include_skipped=True,
+    )
+    rule_order = [
+        r.get("rule") or r.get("id")
+        for r in result.get("rules_evaluated", [])
+        if r.get("engine") == "script"
+    ]
+    assert len(rule_order) == 4, f"expected 4 script records, got {len(rule_order)}: {rule_order}"
+    assert rule_order == ["sleep-a", "sleep-b", "sleep-c", "sleep-d"]
