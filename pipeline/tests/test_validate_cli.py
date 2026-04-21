@@ -121,7 +121,7 @@ def test_execute_dry_run_flags_broken_grep_regex(tmp_path):
         "    engine: script\n"
         '    scope: "*"\n'
         "    severity: error\n"
-        '    script: "grep -nE \'(unclosed\' {file} && exit 1 || exit 0"\n'
+        "    script: \"grep -nE '(unclosed' {file} && exit 1 || exit 0\"\n"
     )
     r = _run(["--validate", "--config", str(cfg), "--execute-dry-run"])
     assert r.returncode == 1, f"stdout={r.stdout} stderr={r.stderr}"
