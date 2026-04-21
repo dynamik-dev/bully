@@ -152,11 +152,65 @@ def _strip_inline_comment(raw: str) -> str:
 
 
 def _parse_scalar(raw: str) -> str:
-    """Normalize a scalar value: strip inline comment, then matched outer quotes only."""
+    """Normalize a scalar value: strip inline comment, then process YAML quote escapes.
+
+    Double-quoted scalars process standard YAML escapes (`\\\\`, `\\"`, `\\n`, `\\t`,
+    `\\r`, `\\/`, `\\0`); unknown escapes are kept verbatim (the backslash is
+    preserved) to avoid silently eating author intent. Single-quoted scalars only
+    process `''` (doubled single quote) as a literal `'`. Plain unquoted scalars
+    pass through unchanged -- backslashes have no special meaning outside quotes.
+    """
     raw = _strip_inline_comment(raw).strip()
-    if len(raw) >= 2 and ((raw[0] == '"' and raw[-1] == '"') or (raw[0] == "'" and raw[-1] == "'")):
-        return raw[1:-1]
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return _unescape_double_quoted(raw[1:-1])
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1].replace("''", "'")
     return raw
+
+
+# YAML double-quoted escape table (subset per the YAML 1.2 spec plus the few
+# C-style escapes we actually see in bully configs). Unknown escapes fall
+# through as `\x` (backslash preserved) so unusual regex patterns survive.
+_DOUBLE_QUOTED_ESCAPES: dict[str, str] = {
+    "\\": "\\",
+    '"': '"',
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "/": "/",
+    "0": "\x00",
+}
+
+
+def _unescape_double_quoted(inner: str) -> str:
+    """Apply YAML double-quoted escape processing to the inside of a scalar.
+
+    Only the subset listed in `_DOUBLE_QUOTED_ESCAPES` is collapsed. Unknown
+    sequences (e.g. `\\z`) are kept literally -- we preserve the backslash and
+    the following character rather than raising, so rule authors can use
+    backslash-heavy regex patterns without the parser throwing at config load.
+    A trailing lone backslash is also kept literally.
+    """
+    if "\\" not in inner:
+        return inner
+    out: list[str] = []
+    i = 0
+    n = len(inner)
+    while i < n:
+        ch = inner[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = inner[i + 1]
+            mapped = _DOUBLE_QUOTED_ESCAPES.get(nxt)
+            if mapped is not None:
+                out.append(mapped)
+            else:
+                out.append(ch)
+                out.append(nxt)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _parse_inline_list(raw: str) -> list[str] | None:
@@ -659,10 +713,122 @@ def effective_skip_patterns(
     return (*SKIP_PATTERNS, *user_global, *project)
 
 
+def _scope_glob_matches(pattern: str, file_path: str) -> bool:
+    """Match a scope glob against a file path, with recursive `**` support.
+
+    `PurePath.match` only grew zero-or-more-segment `**` semantics in Python
+    3.13; bully supports 3.10+. We split the pattern on `**` and require each
+    segment to match contiguously against the path, with `**` absorbing zero
+    or more intermediate path segments. Single `*` still only matches within
+    one segment (via fnmatch).
+
+    Simple patterns without `**` (the common case) fall back to
+    `PurePath.match`, which handles right-anchored suffix matches like
+    `*.ts` matching `src/foo.ts`.
+    """
+    if "**" not in pattern:
+        try:
+            return PurePath(file_path).match(pattern)
+        except ValueError:
+            return False
+
+    path_parts = PurePath(file_path).parts
+    # Split on `**` but keep empty strings at the boundaries so a leading or
+    # trailing `**` is explicit in the segment list.
+    raw_segments = pattern.split("**")
+    # Each non-`**` segment can contain `/`; split further into path-segment
+    # globs. An empty segment (between two consecutive `**`, or at the edges
+    # of the pattern) yields [].
+    segments: list[list[str]] = []
+    for raw in raw_segments:
+        trimmed = raw.strip("/")
+        segments.append(trimmed.split("/") if trimmed else [])
+
+    # Anchored prefix: the first segment must match starting at path_parts[0]
+    # UNLESS the pattern starts with `**/` (i.e. segments[0] is empty), in
+    # which case `**` can absorb zero-or-more leading path parts.
+    return _match_glob_segments(segments, 0, path_parts, 0)
+
+
+def _segment_matches(globs: list[str], parts: tuple[str, ...], start: int) -> bool:
+    """True iff every glob in `globs` matches `parts[start:start+len(globs)]`."""
+    if start + len(globs) > len(parts):
+        return False
+    for i, g in enumerate(globs):
+        if not fnmatch.fnmatchcase(parts[start + i], g):
+            return False
+    return True
+
+
+def _match_glob_segments(
+    segments: list[list[str]],
+    seg_idx: int,
+    parts: tuple[str, ...],
+    part_idx: int,
+) -> bool:
+    """Recursively match `**`-delimited glob segments against path parts.
+
+    `segments[0]` is anchored (must match at `part_idx`). Each subsequent
+    `segments[i]` is preceded by a `**` and may float -- it can start at any
+    position at or after `part_idx`. An empty segment between two `**`
+    markers is a no-op. After matching the last segment the remaining path
+    parts must be fully consumed (len(parts) == part_idx + len(globs)) unless
+    the pattern ended with `**`, in which case they're absorbed.
+    """
+    if seg_idx >= len(segments):
+        # Consumed all segments; remaining path parts must be empty.
+        return part_idx == len(parts)
+
+    globs = segments[seg_idx]
+    is_last = seg_idx == len(segments) - 1
+    # Pattern ended with `**` (trailing empty segment) means the final
+    # segment list is empty and `**` can absorb all remaining parts.
+    trailing_double_star = is_last and not globs
+
+    if seg_idx == 0:
+        # Anchored at part_idx (which is 0 on the initial call). An empty
+        # first segment means the pattern starts with `**`, so the next
+        # segment floats.
+        if not globs:
+            return _match_glob_segments(segments, seg_idx + 1, parts, part_idx)
+        if not _segment_matches(globs, parts, part_idx):
+            return False
+        new_idx = part_idx + len(globs)
+        if is_last:
+            return new_idx == len(parts)
+        return _match_glob_segments(segments, seg_idx + 1, parts, new_idx)
+
+    # Floating segment (preceded by `**`). Try every possible start position
+    # at or after part_idx. `**` can absorb zero or more path parts.
+    if trailing_double_star:
+        # Trailing `**` matches anything from part_idx onward, so any path
+        # parts remaining (zero or more) are absorbed.
+        return True
+
+    if not globs:
+        # Empty floating segment (consecutive `**`s). Collapse and continue.
+        return _match_glob_segments(segments, seg_idx + 1, parts, part_idx)
+
+    end_limit = len(parts) - len(globs)
+    if is_last:
+        # Last segment must consume exactly to the end of parts.
+        return _segment_matches(globs, parts, end_limit) if end_limit >= part_idx else False
+    for try_at in range(part_idx, end_limit + 1):
+        if _segment_matches(globs, parts, try_at):
+            if _match_glob_segments(segments, seg_idx + 1, parts, try_at + len(globs)):
+                return True
+    return False
+
+
 def filter_rules(rules: list[Rule], file_path: str) -> list[Rule]:
-    """Return rules whose scope glob(s) match the given file path."""
-    path = PurePath(file_path)
-    return [r for r in rules if any(path.match(g) for g in r.scope)]
+    """Return rules whose scope glob(s) match the given file path.
+
+    Scope matching supports recursive `**` (zero-or-more path segments) in
+    addition to the standard `*` (single-segment) and `?` wildcards. This is
+    implemented in-house because `PurePath.match` only gained recursive `**`
+    semantics in Python 3.13 and bully supports 3.10+.
+    """
+    return [r for r in rules if any(_scope_glob_matches(g, file_path) for g in r.scope)]
 
 
 # ---------------------------------------------------------------------------
@@ -1930,6 +2096,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Print per-rule verdict (fire/pass/skipped <reason>/dispatched) for "
         "every rule in scope, instead of the JSON pipeline result.",
     )
+    parser.add_argument(
+        "--execute-dry-run",
+        dest="execute_dry_run",
+        action="store_true",
+        help="With --validate: run each script rule against empty input to catch "
+        "shell/regex-level errors (unbalanced parens, missing commands) at config time.",
+    )
     args = parser.parse_args(argv)
     # Back-compat: accept positional args (used by hook)
     if args.positional and not args.config:
@@ -1942,7 +2115,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 # ---- subcommand handlers ----
 
 
-def _cmd_validate(config_path: str | None) -> int:
+def _cmd_validate(config_path: str | None, *, execute_dry_run: bool = False) -> int:
     path = config_path or ".bully.yml"
     if not os.path.exists(path):
         print(f"[FAIL] config not found: {path}", file=sys.stderr)
@@ -1962,7 +2135,77 @@ def _cmd_validate(config_path: str | None) -> int:
             f"ast-grep not on PATH. {_AST_GREP_INSTALL_HINT}",
             file=sys.stderr,
         )
+    if execute_dry_run:
+        return _run_execute_dry_run(rules)
     return 0
+
+
+def _run_execute_dry_run(rules: list[Rule]) -> int:
+    """Execute every script rule against `/dev/null`, report broken scripts.
+
+    Catches shell/regex-level errors at config time: unbalanced parens in a
+    `grep -E` pattern, typos in command names, non-executable scripts, etc.
+    A rule is flagged as broken when either:
+
+    - The exit code is not in {0, 1} (2 = grep syntax error, 126 = not
+      executable, 127 = command-not-found, etc.), OR
+    - stderr carries a known tool-error signature even when exit is 0/1.
+      This matters because shells often mask inner errors: `grep ... &&
+      exit 1 || exit 0` swallows grep's exit-2 and reports 0, leaving the
+      regex diagnostic only in stderr.
+
+    Returns 0 if all script rules are healthy, 1 if any were flagged.
+    """
+    # Prefixes that indicate a tool surfaced an error, not just incidental
+    # stderr chatter. Keep narrow to avoid false positives from tools that
+    # write progress to stderr.
+    error_signatures = (
+        "grep:",
+        "sed:",
+        "awk:",
+        "bash:",
+        "sh:",
+        "command not found",
+        "syntax error",
+        "not recognized as an internal",
+    )
+
+    script_rules = [r for r in rules if r.engine == "script" and r.script]
+    if not script_rules:
+        print("[OK] no script rules to dry-run")
+        return 0
+
+    failures = 0
+    for rule in script_rules:
+        cmd = rule.script.replace("{file}", "/dev/null")
+        try:
+            result = subprocess.run(  # bully-disable: no-shell-true-subprocess dry-run probe of user-configured script; mirrors real execute_script_rule path
+                cmd,
+                shell=True,
+                timeout=5,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[WARN] {rule.id}: dry-run exit=timeout stderr: script timed out")
+            failures += 1
+            continue
+
+        rc = result.returncode
+        stderr = result.stderr.strip()
+        stderr_first = stderr.splitlines()[0] if stderr else ""
+        # A stderr line that matches a known error signature means the tool
+        # reported an error even if the outer shell construct normalized
+        # the exit code back to 0/1.
+        stderr_looks_broken = any(sig in stderr.lower() for sig in error_signatures)
+
+        if rc in (0, 1) and not stderr_looks_broken:
+            print(f"[OK] {rule.id}: dry-run clean (exit {rc})")
+            continue
+        failures += 1
+        print(f"[WARN] {rule.id}: dry-run exit={rc} stderr: {stderr_first}")
+
+    return 0 if failures == 0 else 1
 
 
 def _cmd_show_resolved(config_path: str | None) -> int:
@@ -1980,11 +2223,51 @@ def _cmd_show_resolved(config_path: str | None) -> int:
     return 0
 
 
+_MIN_PYTHON = (3, 10)
+
+
+def _check_python_version(version_info: tuple[int, int] = sys.version_info[:2]) -> tuple[bool, str]:
+    """Return (ok, message) for the Python version check.
+
+    Split out of `_cmd_doctor` so tests can feed synthetic version tuples
+    without spawning a different interpreter.
+    """
+    major, minor = version_info[:2]
+    if (major, minor) >= _MIN_PYTHON:
+        return True, f"[OK] Python {major}.{minor}"
+    need = f"{_MIN_PYTHON[0]}.{_MIN_PYTHON[1]}"
+    return False, f"[FAIL] Python {major}.{minor} < {need} -- upgrade required"
+
+
+def _plugin_cache_candidates(resource_kind: str, name: str) -> list[Path]:
+    """Return plausible `~/.claude/plugins/cache/*/bully/*/{skills,agents}/<name>/...` paths.
+
+    resource_kind is "skills" or "agents". For skills, the file is `<name>/SKILL.md`;
+    for agents, the file is `<name>.md` directly under `agents/`.
+    """
+    root = Path.home() / ".claude" / "plugins" / "cache"
+    if not root.is_dir():
+        return []
+    pattern = f"*/bully/*/{resource_kind}/"
+    out: list[Path] = []
+    for base in root.glob(pattern):
+        if resource_kind == "skills":
+            candidate = base / name / "SKILL.md"
+        else:
+            candidate = base / f"{name}.md"
+        if candidate.is_file():
+            out.append(candidate)
+    return out
+
+
 def _cmd_doctor() -> int:
     ok = True
 
     # Python version
-    print(f"[OK] Python {sys.version_info.major}.{sys.version_info.minor} >= 3.10")
+    py_ok, py_msg = _check_python_version()
+    print(py_msg)
+    if not py_ok:
+        ok = False
 
     # Config present
     cfg = Path.cwd() / ".bully.yml"
@@ -2060,16 +2343,22 @@ def _cmd_doctor() -> int:
         print("[FAIL] no PostToolUse hook invoking hook.sh found in .claude/settings.json")
         ok = False
 
-    # Evaluator subagent definition
+    # Evaluator subagent definition -- legacy path OR plugin cache path
     claude_home = Path(os.environ.get("CLAUDE_HOME", str(Path.home() / ".claude")))
     agent_file = claude_home / "agents" / "bully-evaluator.md"
+    plugin_agents = _plugin_cache_candidates("agents", "bully-evaluator")
     if agent_file.is_file():
         print(f"[OK] evaluator agent at {agent_file}")
+    elif plugin_agents:
+        print(f"[OK] evaluator agent at {plugin_agents[0]} (plugin install)")
     else:
-        print(f"[FAIL] evaluator agent missing at {agent_file}")
+        print(
+            f"[FAIL] evaluator agent missing -- expected at {agent_file} "
+            f"or under ~/.claude/plugins/cache/*/bully/*/agents/bully-evaluator.md"
+        )
         ok = False
 
-    # Skills
+    # Skills -- legacy path OR plugin cache path
     for suffix in (
         "bully",
         "bully-init",
@@ -2077,10 +2366,16 @@ def _cmd_doctor() -> int:
         "bully-review",
     ):
         skill_md = Path.home() / ".claude" / "skills" / suffix / "SKILL.md"
+        plugin_skill = _plugin_cache_candidates("skills", suffix)
         if skill_md.is_file():
             print(f"[OK] skill {suffix} present")
+        elif plugin_skill:
+            print(f"[OK] skill {suffix} present at {plugin_skill[0]} (plugin install)")
         else:
-            print(f"[FAIL] skill {suffix} missing (expected at {skill_md})")
+            print(
+                f"[FAIL] skill {suffix} missing -- expected at {skill_md} "
+                f"or under ~/.claude/plugins/cache/*/bully/*/skills/{suffix}/SKILL.md"
+            )
             ok = False
 
     return 0 if ok else 1
@@ -2253,7 +2548,7 @@ def main() -> None:
     if args.trust:
         sys.exit(_cmd_trust(args.config, refresh=args.refresh))
     if args.validate:
-        sys.exit(_cmd_validate(args.config))
+        sys.exit(_cmd_validate(args.config, execute_dry_run=args.execute_dry_run))
     if args.doctor:
         sys.exit(_cmd_doctor())
     if args.show_resolved_config:

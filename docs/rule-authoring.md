@@ -41,6 +41,14 @@ rule-id:
 - Stdout on failure should list violations. The pipeline parses common formats (see [Output formats](#output-formats)).
 - Each rule has a 30-second timeout.
 
+### YAML string escapes
+
+Double-quoted scalars process YAML escapes: `\\` becomes `\`, `\"` becomes `"`, `\n` becomes newline, `\t` becomes tab. Single-quoted scalars only process `''` as `'` (YAML spec); backslashes pass through literally.
+
+The practical upshot for regex in `script:` values: write `"grep -nE 'console\\.log\\(' {file}"` — YAML turns each `\\` into `\`, so grep sees `console\.log\(` and matches the intended pattern. Under-escaping (`"grep -nE 'console\.log\('"`) leaves grep with `console.log(`, where `.` matches any character and the parens become a group.
+
+For a literal backslash in the script, use single-quoted YAML (`'grep "\\"'`) or double up explicitly in double quotes.
+
 ### Minimal grep pattern
 
 ```yaml
@@ -221,6 +229,8 @@ Scope is right-anchored glob matching via `PurePath.match`.
 | `*` | everything |
 | `["*.php", "*.blade.php"]` | any file matching either glob |
 
+`**` works on all supported Python versions because bully's matcher implements recursive globbing explicitly, not via `PurePath.match` (whose recursive-`**` support only landed in 3.13).
+
 Scope narrowly. Broad scopes (like `"*"`) run more rules per edit and inflate the noise floor. Save `"*"` for truly cross-language rules like orchestration-label bans.
 
 ## Output formats
@@ -327,6 +337,11 @@ bully lint src/foo.php --print-prompt
 # Supply a diff manually (bypasses stdin/file-state inference)
 bully lint src/foo.php --diff "$(git diff src/foo.php)"
 ```
+
+Two more flags worth knowing about:
+
+- **`bully --explain --file <path>`** — prints one line per rule in scope with its verdict: `fire`, `pass`, `skipped <reason>`, or `dispatched`. Reach for this when a rule *should* match a file but isn't firing — the output tells you whether the scope filter dropped it or the rule ran and passed. Already present; surfaced here because it's easy to miss.
+- **`bully validate --execute-dry-run`** — runs every script rule against empty input and flags rules that error out at the shell or regex level. Catches the "grep: parentheses not balanced" class of bugs at config time instead of at hook time. Run it before committing a new regex rule.
 
 Exit codes:
 

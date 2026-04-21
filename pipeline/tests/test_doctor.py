@@ -5,7 +5,89 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pipeline import _check_python_version  # noqa: E402
+
 PIPELINE = Path(__file__).resolve().parent.parent / "pipeline.py"
+
+
+def test_check_python_version_passes_on_310_and_above():
+    ok, msg = _check_python_version((3, 10))
+    assert ok is True
+    assert msg == "[OK] Python 3.10"
+
+    ok, msg = _check_python_version((3, 12))
+    assert ok is True
+    assert msg == "[OK] Python 3.12"
+
+    ok, msg = _check_python_version((4, 0))
+    assert ok is True
+    assert msg == "[OK] Python 4.0"
+
+
+def test_check_python_version_fails_below_310():
+    ok, msg = _check_python_version((3, 9))
+    assert ok is False
+    assert msg.startswith("[FAIL] Python 3.9 < 3.10")
+
+    ok, msg = _check_python_version((3, 8))
+    assert ok is False
+    assert "3.8" in msg
+
+    ok, msg = _check_python_version((2, 7))
+    assert ok is False
+    assert "2.7" in msg
+
+
+def test_doctor_finds_skills_and_agent_in_plugin_cache(tmp_path):
+    """Plugin-installed skills and the evaluator agent live under
+    ~/.claude/plugins/cache/<marketplace>/bully/<version>/{skills,agents}/...
+    Doctor must accept either the legacy or the plugin path.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".bully.yml").write_text(
+        "rules:\n"
+        "  r1:\n"
+        '    description: "d"\n'
+        "    engine: script\n"
+        '    scope: "*"\n'
+        "    severity: error\n"
+        '    script: "exit 0"\n'
+    )
+    (project / ".claude").mkdir()
+    (project / ".claude" / "settings.json").write_text(
+        json.dumps({"hooks": {"PostToolUse": [{"hooks": [{"command": "hook.sh"}]}]}})
+    )
+
+    # Plugin-only layout (no legacy ~/.claude/skills or ~/.claude/agents).
+    home = tmp_path / "home"
+    plugin_root = home / ".claude" / "plugins" / "cache" / "bully-marketplace" / "bully" / "0.2.0"
+    skills_root = plugin_root / "skills"
+    for name in ("bully", "bully-init", "bully-author", "bully-review"):
+        (skills_root / name).mkdir(parents=True)
+        (skills_root / name / "SKILL.md").write_text("# skill\n")
+    agents_root = plugin_root / "agents"
+    agents_root.mkdir(parents=True)
+    (agents_root / "bully-evaluator.md").write_text("# eval\n")
+
+    import os
+
+    env = os.environ.copy()
+    env.update({"HOME": str(home), "CLAUDE_HOME": str(home / ".claude")})
+    r = subprocess.run(
+        [sys.executable, str(PIPELINE), "--doctor"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=str(project),
+        env=env,
+    )
+    assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+    assert "[OK] evaluator agent at" in r.stdout
+    assert "(plugin install)" in r.stdout
+    for name in ("bully", "bully-init", "bully-author", "bully-review"):
+        assert f"[OK] skill {name} present" in r.stdout
 
 
 def _run_doctor(cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:

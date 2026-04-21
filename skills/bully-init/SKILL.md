@@ -67,9 +67,20 @@ rules:
 
 For multi-line descriptions use a folded scalar (`description: >`). Quote all script values with double quotes. Use `{file}` as the target file placeholder. Formatters use `severity: warning`; correctness rules use `severity: error`.
 
-## Step 6: Summarize and hand off
+**Binary note.** Bully ships a `bully` wrapper at its repo root that `exec`s `python3 pipeline/pipeline.py`. Plugin installs don't run `pip install`, so `bully` is not on `PATH` by default -- the wrapper lives at `~/.claude/plugins/cache/bully-marketplace/bully/<version>/bully`. If subsequent steps fail with "command not found", tell the user to either alias it (`alias bully='~/.claude/plugins/cache/bully-marketplace/bully/<version>/bully'`) or symlink it into `~/.local/bin`. Until that's done, fall back to `python3 <plugin-path>/pipeline/pipeline.py ...` with the equivalent flags.
 
-After writing, print:
+## Step 6: Verify and enable
+
+Before handing off, bring the config into a runnable state:
+
+1. **Trust the config** so script/ast rules can execute: `bully trust` (fallback: `python3 <plugin-path>/pipeline/pipeline.py --trust --config .bully.yml`).
+2. **Run `bully doctor`** and surface any `[FAIL]` lines. Plugin installs may emit false positives for skill/agent checks -- if doctor reports a missing skill or agent file, note it but do not block.
+3. **Telemetry directory** (only if the user answered yes in Step 3): `mkdir -p .bully/` and ensure `.gitignore` contains `.bully/` (append it if missing).
+4. **Smoke-test script rules.** For each rule with a concrete `script:`, pick the first in-scope file (e.g. `git ls-files | grep -E '\.(ts|tsx)$' | head -1` against the rule's scope) and run `bully lint <file> --rule <rule-id>`. Report each verdict. If a rule that is *meant* to fire on a known pattern returns pass, flag it as a likely miscompile -- surface it now, not after 40 edits.
+
+## Step 7: Summarize and hand off
+
+After the verification pass, print:
 
 ```
 .bully.yml generated.
@@ -79,6 +90,9 @@ Extends: <packs>
 Migrated: <count> rules from <sources>
 Overrides: <count>
 Excluded globs: <list>
+Trust: <granted|failed>
+Doctor: <pass|N failures>
+Smoke test: <N passed, N flagged>
 ```
 
 Tell the user: "To add project-specific rules, use `/bully-author`. To audit rule health later, use `/bully-review`."
