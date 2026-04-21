@@ -39,7 +39,7 @@ VALID_RULE_FIELDS = {
     "pattern",
     "language",
 }
-VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip"}
+VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip", "execution"}
 
 # User-global ignore file: one glob per line, blank lines and `#` comments
 # allowed. Loaded by `effective_skip_patterns` and merged with the built-in
@@ -255,6 +255,7 @@ class _ParsedConfig:
     extends: list[str] = field(default_factory=list)
     skip: list[str] = field(default_factory=list)
     schema_version: int | None = None
+    max_workers: int | None = None
 
 
 def _parse_single_file(path: str) -> _ParsedConfig:
@@ -274,7 +275,9 @@ def _parse_single_file(path: str) -> _ParsedConfig:
     in_rules_block = False
     in_extends_block = False
     in_skip_block = False
+    in_execution_block = False
     skip: list[str] = []
+    max_workers: int | None = None
 
     def finalize_rule() -> None:
         nonlocal current_id, fields, field_lines
@@ -334,6 +337,32 @@ def _parse_single_file(path: str) -> _ParsedConfig:
         elif in_skip_block:
             in_skip_block = False
 
+        # Execution-block continuation: `<key>: <value>` at indent 2.
+        if in_execution_block and indent >= 2 and ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value_raw = value.strip()
+            if key != "max_workers":
+                raise ConfigError(
+                    f"unknown execution field '{key}' "
+                    f"(allowed: max_workers)",
+                    lineno,
+                )
+            parsed_val = _parse_scalar(value_raw)
+            try:
+                n = int(parsed_val)
+                if n <= 0:
+                    raise ValueError
+            except (TypeError, ValueError) as e:
+                raise ConfigError(
+                    f"max_workers must be a positive integer, got {parsed_val!r}",
+                    lineno,
+                ) from e
+            max_workers = n
+            continue
+        elif in_execution_block:
+            in_execution_block = False
+
         # Top-level key (indent 0).
         if indent == 0:
             if current_id is not None:
@@ -381,6 +410,13 @@ def _parse_single_file(path: str) -> _ParsedConfig:
                         'skip must be a list like ["_build/**", "vendor/**"]',
                         lineno,
                     )
+            elif key == "execution":
+                if value_raw != "":
+                    raise ConfigError(
+                        "execution must be followed by an indented block",
+                        lineno,
+                    )
+                in_execution_block = True
             # `rules:` handled above; anything else would have raised already.
             continue
 
@@ -446,6 +482,7 @@ def _parse_single_file(path: str) -> _ParsedConfig:
         extends=extends,
         skip=skip,
         schema_version=schema_version,
+        max_workers=max_workers,
     )
 
 
