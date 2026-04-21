@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 from pipeline import Rule, Violation, _is_baselined, _line_has_disable
@@ -117,3 +118,62 @@ def evaluate_rule(
         }
 
     return RuleResult(rule_id=rule.id, violations=filtered, record=record)
+
+
+def run_rules_parallel(
+    rules: list[Rule],
+    ctx: RuleContext,
+    engine: str,
+    executor_fn: Callable[[Rule, RuleContext], list[Violation]],
+    max_workers: int,
+) -> list[RuleResult]:
+    """Evaluate `rules` concurrently and return RuleResults in submission order.
+
+    `evaluate_rule` is designed not to raise, but we still wrap future.result()
+    in a best-effort try/except that synthesizes an internal-error RuleResult
+    if something slips through (e.g. a buggy executor_fn somehow bypasses
+    the inner guard). No future is cancelled on failure — every rule runs to
+    completion so the user sees the full picture.
+    """
+    if not rules:
+        return []
+    # A pool with zero workers would deadlock on submit(); clamp to >=1.
+    workers = max(1, min(max_workers, len(rules)))
+    results: list[RuleResult | None] = [None] * len(rules)
+
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bully-rule") as pool:
+        futures = [
+            pool.submit(evaluate_rule, rule, ctx, engine, executor_fn)
+            for rule in rules
+        ]
+        for idx, fut in enumerate(futures):
+            try:
+                results[idx] = fut.result()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as exc:  # noqa: BLE001 — defence-in-depth
+                rule = rules[idx]
+                description = f"internal error: {type(exc).__name__}: {exc}"[:500]
+                err_violation = Violation(
+                    rule=rule.id,
+                    engine=engine,
+                    severity="error",
+                    line=None,
+                    description=description,
+                )
+                record = {
+                    "id": rule.id,
+                    "engine": engine,
+                    "verdict": "violation",
+                    "severity": "error",
+                    "line": None,
+                    "latency_ms": None,
+                    "error": True,
+                }
+                results[idx] = RuleResult(
+                    rule_id=rule.id,
+                    violations=[err_violation],
+                    record=record,
+                    internal_error=True,
+                )
+    return [r for r in results if r is not None]

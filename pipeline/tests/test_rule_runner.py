@@ -112,3 +112,81 @@ def test_evaluate_rule_truncates_long_exception_messages_to_500_chars():
     description = result.violations[0].description
     assert len(description) == 500
     assert description.startswith("internal error: RuntimeError:")
+
+
+import time as _time
+
+from rule_runner import run_rules_parallel
+
+
+def _delayed_executor(delay_by_id: dict[str, float]):
+    def fn(rule, ctx):
+        _time.sleep(delay_by_id.get(rule.id, 0.0))
+        return []
+    return fn
+
+
+def test_run_rules_parallel_preserves_declaration_order():
+    rules = [_make_rule(f"r{i}") for i in range(4)]
+    ctx = RuleContext(file_path="f.py", diff="", baseline={}, config_path=None)
+    # Staggered delays so completion order != declaration order.
+    delays = {"r0": 0.12, "r1": 0.02, "r2": 0.08, "r3": 0.04}
+    results = run_rules_parallel(
+        rules, ctx, "script", _delayed_executor(delays), max_workers=4
+    )
+    assert [r.rule_id for r in results] == ["r0", "r1", "r2", "r3"]
+
+
+def test_run_rules_parallel_actually_parallel():
+    import threading as _threading
+
+    rules = [_make_rule(f"r{i}") for i in range(4)]
+    ctx = RuleContext(file_path="f.py", diff="", baseline={}, config_path=None)
+
+    active = 0
+    peak = 0
+    lock = _threading.Lock()
+    barrier = _threading.Event()
+
+    def fn(rule, c):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        # Wait until all 4 workers have entered before any of them leave.
+        # First thread to reach peak=4 trips the barrier for everyone.
+        if not barrier.is_set() and peak >= 4:
+            barrier.set()
+        barrier.wait(timeout=1.0)
+        with lock:
+            active -= 1
+        return []
+
+    run_rules_parallel(rules, ctx, "script", fn, max_workers=4)
+    assert peak == 4, f"expected peak=4 concurrent workers, got peak={peak}"
+
+
+def test_run_rules_parallel_max_workers_1_serializes():
+    rules = [_make_rule(f"r{i}") for i in range(3)]
+    ctx = RuleContext(file_path="f.py", diff="", baseline={}, config_path=None)
+    delays = {f"r{i}": 0.1 for i in range(3)}  # serial ~0.3s
+    t0 = _time.perf_counter()
+    run_rules_parallel(rules, ctx, "script", _delayed_executor(delays), max_workers=1)
+    elapsed = _time.perf_counter() - t0
+    assert elapsed >= 0.28, f"expected serial ~0.3s, got {elapsed:.2f}s"
+
+
+def test_run_rules_parallel_one_raising_rule_does_not_abort_others():
+    rules = [_make_rule("r0"), _make_rule("r1"), _make_rule("r2")]
+    ctx = RuleContext(file_path="f.py", diff="", baseline={}, config_path=None)
+
+    def fn(rule, c):
+        if rule.id == "r1":
+            raise RuntimeError("boom")
+        return []
+
+    results = run_rules_parallel(rules, ctx, "script", fn, max_workers=3)
+    assert [r.rule_id for r in results] == ["r0", "r1", "r2"]
+    assert results[0].internal_error is False
+    assert results[1].internal_error is True
+    assert results[2].internal_error is False
