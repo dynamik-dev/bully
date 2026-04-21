@@ -615,6 +615,35 @@ def parse_config(path: str) -> list[Rule]:
     return resolved
 
 
+def resolve_max_workers(config_path: str) -> int:
+    """Resolve concurrent-rule worker count.
+
+    Precedence (highest first):
+      1. BULLY_MAX_WORKERS env var (positive int)
+      2. execution.max_workers in the top-level .bully.yml
+      3. Default: min(8, os.cpu_count() or 4)
+
+    Invalid env values (non-int, zero, negative) silently fall through
+    to the config / default. Config-level invalid values were already
+    rejected at parse time by _parse_single_file.
+    """
+    env_raw = os.environ.get("BULLY_MAX_WORKERS")
+    if env_raw is not None:
+        try:
+            n = int(env_raw)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    try:
+        parsed = _parse_single_file(config_path)
+        if parsed.max_workers is not None:
+            return parsed.max_workers
+    except ConfigError:
+        pass  # parse errors surface when the caller invokes parse_config directly
+    return min(8, os.cpu_count() or 4)
+
+
 def _load_with_extends(path: str, visited: list[str]) -> list[Rule]:
     """Recursively load a config + its extends. Returns merged rule list."""
     abs_path = str(Path(path).resolve())
