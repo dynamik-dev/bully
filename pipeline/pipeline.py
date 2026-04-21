@@ -754,10 +754,7 @@ def _segment_matches(globs: list[str], parts: tuple[str, ...], start: int) -> bo
     """True iff every glob in `globs` matches `parts[start:start+len(globs)]`."""
     if start + len(globs) > len(parts):
         return False
-    for i, g in enumerate(globs):
-        if not fnmatch.fnmatchcase(parts[start + i], g):
-            return False
-    return True
+    return all(fnmatch.fnmatchcase(parts[start + i], g) for i, g in enumerate(globs))
 
 
 def _match_glob_segments(
@@ -814,9 +811,10 @@ def _match_glob_segments(
         # Last segment must consume exactly to the end of parts.
         return _segment_matches(globs, parts, end_limit) if end_limit >= part_idx else False
     for try_at in range(part_idx, end_limit + 1):
-        if _segment_matches(globs, parts, try_at):
-            if _match_glob_segments(segments, seg_idx + 1, parts, try_at + len(globs)):
-                return True
+        if _segment_matches(globs, parts, try_at) and _match_glob_segments(
+            segments, seg_idx + 1, parts, try_at + len(globs)
+        ):
+            return True
     return False
 
 
@@ -2251,10 +2249,7 @@ def _plugin_cache_candidates(resource_kind: str, name: str) -> list[Path]:
     pattern = f"*/bully/*/{resource_kind}/"
     out: list[Path] = []
     for base in root.glob(pattern):
-        if resource_kind == "skills":
-            candidate = base / name / "SKILL.md"
-        else:
-            candidate = base / f"{name}.md"
+        candidate = base / name / "SKILL.md" if resource_kind == "skills" else base / f"{name}.md"
         if candidate.is_file():
             out.append(candidate)
     return out
