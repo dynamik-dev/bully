@@ -2,6 +2,10 @@
 All notable changes documented here. Format per Keep a Changelog, semver adherence.
 
 ## [Unreleased]
+### Planned
+See docs/plan.md for the active improvement plan.
+
+## [0.4.0] - 2026-04-21
 ### Added
 - Parallel execution of script and AST rules within a single file (`execution.max_workers` config, `BULLY_MAX_WORKERS` env). Default `min(8, os.cpu_count() or 4)`. Set `max_workers: 1` to restore serial execution if a rule script needs exclusive access to a resource. Single-rule phases skip the pool and run inline.
 - Bench (`bench/fixtures`): warm `wall_p50` ~38ms vs ~40ms on the prior release (~−5% on the mixed fixture suite). The big-extends-chain fixture goes ~12ms → ~8ms (−37%). Cold start is within noise.
@@ -9,9 +13,6 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 
 ### Changed
 - **Behaviour change:** a Python exception inside a rule's evaluator (not its shell exit code — an exception from inside bully's rule dispatch) no longer crashes the pipeline. It now becomes a blocking `severity=error` violation with description `"internal error: <ExcType>: <msg>"`. Exit code and gate behaviour are unchanged (the edit/commit is still blocked), but the output format for this case is different. Shell-level non-zero exits from script rules are unaffected.
-
-### Planned
-See docs/plan.md for the active improvement plan.
 
 ## [0.3.0] - 2026-04-21
 ### Added

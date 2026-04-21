@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bully"
-version = "0.3.0"
+version = "0.4.0"
 description = "Agent-native linting pipeline for Claude Code"
 requires-python = ">=3.10"
 authors = [{ name = "dynamik-dev" }]

@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Bully — agent-native linting for Claude Code.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "bully",
       "source": "./",
       "description": "Agent-native lint pipeline for Claude Code. PostToolUse hook enforces a single .bully.yml across script and semantic rules.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "homepage": "https://github.com/dynamik-dev/bully",
       "category": "development",
       "strict": true
