@@ -27,15 +27,49 @@ See `docs/rule-authoring.md` for full field reference and the rule quality check
 
 Not triggered by bootstrap (`bully-init`), audit (`bully-review`), or hook-output interpretation (`bully`).
 
-## Engine choice
+## Where the rule lives (four routing options)
 
-- `script` -- greppable: banned names, banned imports, required headers, forbidden strings, formatting shell-outs.
-- `ast` -- structural, deterministic: "no `as any` cast", "no empty catch", "no public mutable property", "no `var_dump` call". Uses `ast-grep` to match code structure, so it ignores comments, strings, and formatting. Prefer this over `script` when grep would produce false positives on strings/comments or miss formatting variants.
-- `semantic` -- judgment-based: "inline single-use vars", "extract complex logic", "prefer contracts over concretes".
+Bully is the cop; linters are the lawmakers. The PostToolUse hook runs on every Edit/Write regardless of *where* a rule's definition lives. The routing question is just which tool the hook invokes to check the file. In priority order:
 
-**Preferring ast over script.** If the rule is structural (match a call, cast, declaration, or method shape) rather than textual, `ast` is usually cleaner. Only stay with `script` if you need to shell out to an existing linter, read the diff from stdin, or do something grep-native that ast-grep can't express.
+1. **Linter passthrough** -- an installed (or reasonably installable) linter can enforce this with a rule-config change. The rule definition lives in the linter's config (`ruff.toml`, `biome.json`, `eslint.config.*`, `phpstan.neon`, …). `.bully.yml` gets a passthrough rule: `engine: script`, `script: "<linter> <args> {file}"`. Bully still enforces on every edit -- the linter just owns what "violation" means.
+2. **ast** -- structural pattern, no linter covers it: "no `as any` cast", "no empty catch", "no public mutable property". Uses `ast-grep`, so matches ignore comments/strings/formatting. Prefer this over grep when meaning depends on syntactic context.
+3. **script (grep/awk)** -- textual pattern, no structure needed: filename conventions, forbidden import paths, "no `TODO` without a ticket number", required header comments. Regex is the right tool here.
+4. **semantic** -- judgment only an LLM can make: "inline single-use vars", "error messages should be actionable", "this migration isn't idempotent".
 
-**ast-grep dependency pre-flight.** Before proposing an `engine: ast` rule, probe availability:
+### Decision tree
+
+Ask in order:
+
+- Could an **installed** linter's existing rule or plugin cover this via a config change? → passthrough.
+- Could an **installable** linter (ruff, biome, eslint-plugin-X, …) cover this? → propose installing, then passthrough (see pre-flight below).
+- Does the meaning depend on syntactic context (call site, cast, declaration, nesting)? → `engine: ast`.
+- Is it a textual pattern that a grep can express without false positives on comments/strings? → `engine: script`.
+- Does it need judgment? → `engine: semantic`.
+
+If unsure, ask the user. Do not silently skip a tier. In particular: do not reach for grep when an installed linter or ast-grep would catch it cleanly.
+
+### Enforcement-guarantee line (say this when recommending a linter)
+
+When recommending option 1, always include this clarification once per conversation:
+
+> I'd enable this rule in `<linter>`'s config. Bully still enforces it on every Edit/Write via a passthrough rule -- the question is just *where the rule definition lives*, not whether bully enforces it.
+
+The user might otherwise assume "put it in the linter" means "remove it from bully's scope." It doesn't. The passthrough rule is what makes the guarantee hold; if the user picks option 1 and you forget to add the passthrough rule, the linter is just sitting there hoping someone runs it.
+
+### Linter passthrough pre-flight
+
+Before proposing option 1, detect whether the linter is installed:
+
+```bash
+command -v <linter> >/dev/null && echo OK || echo MISSING
+```
+
+- **Installed**: propose the linter-config edit + the `.bully.yml` passthrough rule. Show both diffs before writing.
+- **Missing**: present it as a *choice*, not a default: "I'd recommend installing `<linter>` so the rule can live there. Install command: `<cmd>`. Or, if you'd rather keep this in bully directly, I can write a grep/ast rule instead." Wait for the user's call. Installing touches project manifests or CI, so never install silently.
+
+### ast-grep dependency pre-flight
+
+Before proposing an `engine: ast` rule, probe availability:
 
 ```bash
 command -v ast-grep >/dev/null && echo OK || echo MISSING
@@ -43,7 +77,25 @@ command -v ast-grep >/dev/null && echo OK || echo MISSING
 
 If `MISSING`, do not silently draft an `engine: ast` rule. Tell the user: "This rule would work best as `engine: ast`, but ast-grep isn't installed. Either: (a) run `brew install ast-grep` (or `cargo install ast-grep`) and I'll proceed, or (b) I'll fall back to `engine: script` with a grep pattern (with the usual false-positive tradeoffs)." Wait for their choice before drafting.
 
-If unsure about engine choice, ask the user. Do not auto-promote semantic to script or ast without confirmation.
+### Example passthrough rules
+
+```yaml
+  ruff-check:
+    description: "Code must pass ruff check."
+    engine: script
+    scope: ["*.py"]
+    severity: error
+    script: "ruff check --quiet {file}"
+
+  biome-lint:
+    description: "Code must pass biome lint."
+    engine: script
+    scope: ["*.ts", "*.tsx", "*.js", "*.jsx"]
+    severity: error
+    script: "biome lint --reporter=summary {file}"
+```
+
+Keep lint, format, and typecheck as **separate** passthrough rules -- failure modes and messages are distinct, and `bully-review` telemetry stays legible.
 
 ## Scope globs
 
@@ -125,10 +177,10 @@ The parser is fixed-indent. Do not reformat the file.
 
 ## Adding a new rule
 
-1. Classify (script vs ast vs semantic). If ast, confirm ast-grep is installed (see pre-flight in "Engine choice" above).
-2. Collect `id` (kebab-case, unique), `description`, `engine`, `scope`, `severity`, plus `script` (script rules), `pattern` + optional `language` (ast rules), or no extra field (semantic rules).
+1. Route using the four-option decision tree in "Where the rule lives". If the answer is **linter passthrough**, run the linter pre-flight (installed vs missing), propose the linter-config edit + the `.bully.yml` passthrough rule, and say the enforcement-guarantee line. If **ast**, run the ast-grep pre-flight.
+2. Collect `id` (kebab-case, unique), `description`, `engine`, `scope`, `severity`, plus `script` (script and linter-passthrough rules), `pattern` + optional `language` (ast rules), or no extra field (semantic rules).
 3. Run the fixture-testing protocol.
-4. Edit `.bully.yml` to append the rule.
+4. Edit `.bully.yml` to append the rule. For linter passthroughs, also edit the linter's config in the same step and show both diffs before writing.
 5. Sanity-check against 2-3 existing project files:
    ```bash
    bully lint <existing-file> --rule <new-rule-id>
@@ -176,6 +228,7 @@ Apply one recommendation at a time. Test each before moving on. Never batch.
 | Slow rule | Demote to `warning` or move to CI. |
 | Semantic rule with stable mechanical fix | Draft an equivalent script or ast rule, test, layer it alongside -- do not replace. |
 | Script rule noisy due to string/comment false positives | Convert to `engine: ast` with a structural `pattern:`. Verify ast-grep is installed first. |
+| Script rule grep-matching a pattern an installed linter could express | Move the rule into the linter's config; replace the `.bully.yml` rule with a passthrough (`script: "<linter> … {file}"`). Say the enforcement-guarantee line. |
 
 ## Troubleshooting
 

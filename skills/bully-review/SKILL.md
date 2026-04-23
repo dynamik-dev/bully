@@ -49,6 +49,8 @@ The analyzer returns three buckets plus a `by_rule` table with `fires`, `passes`
 | Dead script rule | Check scope glob first; if correct, remove the rule. |
 | Slow rule | Cache, narrow scope, or move to pre-commit/CI. |
 | Semantic rule with high `evaluate_requested` and no downstream edits | Candidate for promotion to a `script` rule. |
+| Script rule grep-matching a structural pattern (likely noise from comments/strings) | FYI: propose conversion to `engine: ast`. Verify ast-grep is installed first. |
+| Script rule catching a pattern an installed linter could express | FYI: propose moving the rule into the linter's config and replacing the bully rule with a passthrough (`script: "<linter> … {file}"`). Bully still enforces it via the hook. |
 
 ## Step 4: Present findings
 

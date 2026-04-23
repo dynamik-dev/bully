@@ -10,7 +10,16 @@ metadata:
 
 # Agentic Lint Init
 
-Generate a baseline `.bully.yml` by detecting the stack, migrating existing linter rules, and extending shared rule packs.
+Generate a baseline `.bully.yml` by detecting the stack, wiring installed linters as passthroughs, and routing project-specific rules to the right enforcement mechanism.
+
+## Framing: cop vs lawmakers
+
+Bully is the cop; native linters (ruff, biome, eslint, tsc, phpstan, rubocop, golangci-lint, clippy, …) are the lawmakers. The PostToolUse hook runs on every Edit/Write, so bully is always the entry point to enforcement. Where a rule *definition* lives is a separate question:
+
+- **Linter passthrough** -- an installed linter owns the rule; `.bully.yml` has a passthrough (`engine: script`, `script: "<linter> <args> {file}"`) that invokes it on every edit.
+- **ast / script / semantic** -- the rule lives directly in `.bully.yml`.
+
+This skill is user-driven. Do not silently install tools or migrate rules. Every step below is a *proposal* the user accepts or declines.
 
 ## Step 1: Detect the stack
 
@@ -27,15 +36,45 @@ Read manifest files in the project root and map them to rule packs:
 
 Present what was detected and wait for confirmation before continuing.
 
-## Step 2: Migrate existing linter config
+## Step 2: Wire up installed linters as passthroughs
 
-Scan for `CLAUDE.md`/`AGENTS.md` style sections, Pest `arch()` tests, and configs from ESLint, Biome, PHPStan, Ruff, RuboCop. For each custom rule, prefer migrating to a native script rule (grep/awk) or a semantic rule over shelling out to the linter binary on every edit.
+Detect which lint/format/typecheck tools the project already has on `PATH` or declared in its manifest: ruff, biome, eslint, prettier, tsc, phpstan, pint, rubocop, rubyfmt, golangci-lint, gofmt, clippy, ast-grep, pytest, etc.
 
-For each external linter found, ask:
+For each one, ask:
 
-> I found `<linter>`. (a) Migrate its rules into native script/semantic rules (recommended). (b) Keep it running via the pipeline (adds latency, requires binary). (c) Leave it outside the pipeline (CI/pre-commit only).
+> I found `<linter>` configured. Add a passthrough rule so bully runs it on every Edit/Write? The linter keeps owning its own rules -- bully just enforces "pass the linter" whenever you touch a matching file.
 
-If the user picks (b), generate a shell-out rule with `severity: warning`.
+If yes, queue a rule like:
+
+```yaml
+  ruff-check:
+    description: "Code must pass ruff check."
+    engine: script
+    scope: ["*.py"]
+    severity: error
+    script: "ruff check --quiet {file}"
+```
+
+Keep lint / format / typecheck as **separate** passthrough rules -- failure modes and messages are distinct, and `bully-review` telemetry stays legible per tool.
+
+## Step 2b: Offer to install missing linters (optional, requires approval)
+
+If the detected stack has no linter installed and one is conventional (ruff for Python, biome or eslint for JS/TS, golangci-lint for Go, rubocop for Ruby, phpstan for PHP, clippy for Rust), *offer* it as a choice -- do not push:
+
+> You don't have a linter installed for `<stack>`. Most projects use `<tool>`. Want me to add it to `<manifest>` and wire up a passthrough? Or skip and we'll handle everything in bully directly.
+
+Installing touches `package.json` / `pyproject.toml` / `composer.json` / CI, so this must be an explicit user opt-in. Never install silently. If the user declines, move on -- their `.bully.yml` can still cover everything via `ast`/`script`/`semantic` rules.
+
+## Step 2c: Migrate project-specific rules (CLAUDE.md sections, arch tests, team conventions)
+
+For each custom rule found (`CLAUDE.md`/`AGENTS.md` guidelines, Pest `arch()` tests, team docs, prose rules), route it using the same four-option decision tree as `bully-author`:
+
+1. **Linter passthrough** -- can an installed linter (or one the user just opted into) enforce this with a rule-config edit? If yes, edit the linter's config AND queue a passthrough rule (if not already added in Step 2).
+2. **ast** -- structural pattern, no linter covers it. Queue an `engine: ast` rule. Requires ast-grep installed.
+3. **script (grep)** -- textual pattern with no false-positive risk on comments/strings.
+4. **semantic** -- judgment only an LLM can make.
+
+For each migration, state the enforcement-guarantee line once: *"Bully still runs on every Edit/Write -- we're just deciding where the rule definition lives."* Then present the chosen routing and wait for confirmation before queueing.
 
 ## Step 3: Ask setup questions
 
