@@ -57,6 +57,19 @@ If yes, queue a rule like:
 
 Keep lint / format / typecheck as **separate** passthrough rules -- failure modes and messages are distinct, and `bully-review` telemetry stays legible per tool.
 
+### Linter precedence when multiple overlap
+
+If several installed tools cover overlapping concerns, pick the superset and skip the others (wiring all three causes conflicts). Default precedence:
+
+| Stack | Prefer | Skip (superseded) |
+|-------|--------|-------------------|
+| Python | `ruff check` + `ruff format` | `black`, `isort`, `flake8`, `pycodestyle`, `pydocstyle` |
+| JS/TS | `biome` (if configured) OR `eslint` + `prettier` | do not wire both biome and eslint/prettier together |
+| Ruby | `rubocop` | `standardrb` (choose one) |
+| Go | `golangci-lint` | individual `staticcheck` / `revive` |
+
+If the user *actively uses* a superseded tool (e.g. says "we still run isort in CI"), swap in their preferred tool instead. Call out what you're skipping and why before writing.
+
 ## Step 2b: Offer to install missing linters (optional, requires approval)
 
 If the detected stack has no linter installed and one is conventional (ruff for Python, biome or eslint for JS/TS, golangci-lint for Go, rubocop for Ruby, phpstan for PHP, clippy for Rust), *offer* it as a choice -- do not push:
@@ -81,8 +94,25 @@ For each migration, state the enforcement-guarantee line once: *"Bully still run
 Before writing, ask:
 
 - Default severity for new rules (`error` or `warning`)?
-- Enable telemetry directory (`.bully/telemetry/`) for rule-health review?
-- Any globs to exclude (e.g. `vendor/`, `node_modules/`, generated code)?
+- Any additional globs to **skip** beyond the stack defaults? (See the defaults table below.) These become a top-level `skip:` list in `.bully.yml` -- the key is `skip`, not `exclude` or `ignore`.
+
+**Telemetry is on by default.** Step 6 always creates `.bully/` and adds it to `.gitignore` -- that's what enables `bully-review` to work later. Telemetry is never a key inside `.bully.yml`. If the user explicitly says they don't want it, skip the `mkdir` in Step 6 and tell them `bully-review` will report "empty log" until they create `.bully/` themselves.
+
+### Stack-aware default skip globs
+
+Seed `skip:` with the defaults for the detected stack(s). Merge across stacks if multiple apply (e.g. a repo with `package.json` and `pyproject.toml`).
+
+| Stack | Default skip globs |
+|-------|-------------------|
+| Python | `.venv/**`, `venv/**`, `**/__pycache__/**`, `.pytest_cache/**`, `.ruff_cache/**`, `.mypy_cache/**`, `build/**`, `dist/**`, `*.egg-info/**` |
+| Node/JS/TS | `node_modules/**`, `dist/**`, `build/**`, `.next/**`, `.nuxt/**`, `.output/**`, `coverage/**`, `*.min.js` |
+| PHP | `vendor/**`, `storage/**`, `bootstrap/cache/**`, `public/build/**` |
+| Go | `vendor/**`, `bin/**` |
+| Rust | `target/**` |
+| Ruby | `vendor/**`, `tmp/**`, `log/**`, `public/assets/**` |
+| Universal | `.git/**`, `.idea/**`, `.vscode/**` (only add if present) |
+
+Present the merged list and ask the user to add/remove before writing.
 
 ## Step 4: Seed rules from the examples catalog
 
@@ -94,27 +124,80 @@ If the user declines all of them, write an empty `rules:` block and let the `bul
 
 Write to the project root. The parser expects 2-space indentation for rule IDs under `rules:` and 4-space indentation for each rule's fields. Scope is an inline list.
 
+### Allowed top-level keys (exhaustive)
+
+**Only these keys are valid at the top level of `.bully.yml`:**
+
+| Key | Purpose |
+|-----|---------|
+| `schema_version` | Optional integer, reserved for future migrations. |
+| `extends` | List of shared rule-pack paths. |
+| `rules` | Map of rule-id → rule definition. |
+| `skip` | List of globs excluded from all rules. **The key is `skip` -- not `exclude`, `ignore`, `excludes`, or `ignores`.** |
+| `execution` | Map with `max_workers` (int). |
+
+**Do not invent other top-level keys.** In particular, there is no `telemetry:` key -- telemetry is enabled by the presence of the `.bully/` directory at the project root, which Step 6 creates.
+
+### Rule shape
+
 ```yaml
+schema_version: 1
+skip:
+  - "vendor/**"
+  - "node_modules/**"
 rules:
   rule-id:
     description: "What the rule enforces"
-    engine: script        # or semantic
+    engine: script        # script | ast | semantic
     scope: ["*.ts", "*.tsx"]
-    severity: error       # or warning
+    severity: error       # error | warning
     script: "command {file}"   # script engine only
 ```
 
 For multi-line descriptions use a folded scalar (`description: >`). Quote all script values with double quotes. Use `{file}` as the target file placeholder. Formatters use `severity: warning`; correctness rules use `severity: error`.
 
-**Binary note.** Bully ships a `bully` wrapper at its repo root that `exec`s `python3 pipeline/pipeline.py`. Plugin installs don't run `pip install`, so `bully` is not on `PATH` by default -- the wrapper lives at `~/.claude/plugins/cache/bully-marketplace/bully/<version>/bully`. If subsequent steps fail with "command not found", tell the user to either alias it (`alias bully='~/.claude/plugins/cache/bully-marketplace/bully/<version>/bully'`) or symlink it into `~/.local/bin`. Until that's done, fall back to `python3 <plugin-path>/pipeline/pipeline.py ...` with the equivalent flags.
+### Draft-then-validate protocol (MANDATORY)
+
+Never write directly to `.bully.yml` on init. Draft first, parse-check the draft, and only rename on pass. This prevents polluting the user's project with an invalid config if the LLM hallucinates a key (e.g. the historical `telemetry:` / `exclude:` mistakes).
+
+```bash
+# 1. Write the draft to a scratch path (use the Write tool):
+#      /tmp/bully-init-draft.yml  <-- full proposed .bully.yml contents
+#
+# 2. Parse-check the draft:
+BULLY=$(command -v bully 2>/dev/null || ls -d ~/.claude/plugins/cache/*/bully/*/bully 2>/dev/null | sort -V | tail -1)
+"$BULLY" --validate --config /tmp/bully-init-draft.yml
+```
+
+Exit code `0` + no `[FAIL]` output = draft is valid. Nonzero exit = draft is broken: read the `[FAIL]` line (e.g. `unknown top-level key 'telemetry'`), fix the draft in place, re-check. **Do not overwrite `.bully.yml` until `--validate` exits clean.**
+
+Once the draft validates:
+
+```bash
+mv /tmp/bully-init-draft.yml .bully.yml
+```
+
+### Binary resolution
+
+Bully ships a `bully` wrapper at its repo root that `exec`s `python3 pipeline/pipeline.py`. Plugin installs don't run `pip install`, so `bully` is often not on `PATH`. Resolve the binary with this one-liner (used above):
+
+```bash
+BULLY=$(command -v bully 2>/dev/null || ls -d ~/.claude/plugins/cache/*/bully/*/bully 2>/dev/null | sort -V | tail -1)
+```
+
+`sort -V | tail -1` picks the newest version from the plugin cache, avoiding stale `0.3.0`/`0.4.x` entries that older installs leave behind. If `$BULLY` is empty after that, tell the user to either alias it (`alias bully='<path>'`) or symlink into `~/.local/bin`, and fall back to `python3 <plugin-path>/pipeline/pipeline.py ...`.
 
 ## Step 6: Verify and enable
 
 Before handing off, bring the config into a runnable state:
 
 1. **Trust the config** so script/ast rules can execute: `bully trust` (fallback: `python3 <plugin-path>/pipeline/pipeline.py --trust --config .bully.yml`).
-2. **Run `bully doctor`** and surface any `[FAIL]` lines. Plugin installs may emit false positives for skill/agent checks -- if doctor reports a missing skill or agent file, note it but do not block.
-3. **Telemetry directory** (only if the user answered yes in Step 3): `mkdir -p .bully/` and ensure `.gitignore` contains `.bully/` (append it if missing).
+2. **Run `bully doctor`** and surface any `[FAIL]` lines. **Known false positives for plugin installs** -- note them but do not try to "fix" them:
+   - `[FAIL] no PostToolUse hook invoking hook.sh found in .claude/settings.json` -- the plugin loads `hooks/hooks.json` dynamically via the Claude Code plugin system. `.claude/settings.json` is *not* where the hook lives for plugin installs, so this FAIL is expected and harmless.
+   - Skill/agent paths pointing at an older version (e.g. binary is `0.5.0` but doctor resolves skills from `0.3.0`). Doctor picks the first match in the plugin cache; stale cache directories from prior versions can shadow the current one. Either tell the user to delete old cache dirs under `~/.claude/plugins/cache/bully-marketplace/bully/` or just note it.
+
+   Any `[FAIL]` outside that list is real -- surface it.
+3. **Telemetry directory** (always, unless the user explicitly opted out in Step 3): `mkdir -p .bully/` and ensure `.gitignore` contains `.bully/` (append it if missing). This is what enables `bully-review` to read the rule-health log.
 4. **Smoke-test script rules.** For each rule with a concrete `script:`, pick the first in-scope file (e.g. `git ls-files | grep -E '\.(ts|tsx)$' | head -1` against the rule's scope) and run `bully lint <file> --rule <rule-id>`. Report each verdict. If a rule that is *meant* to fire on a known pattern returns pass, flag it as a likely miscompile -- surface it now, not after 40 edits.
 
 ## Step 7: Summarize and hand off
