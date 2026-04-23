@@ -12,15 +12,27 @@ This doc covers the concepts. For the interactive flow — drafting a rule from 
 
 The skill applies the discipline described here. This doc is the reference; the skill is the workflow.
 
-## Pick an engine
+## Where rules live (four options, one cop)
 
-| Use a `script` rule when… | Use an `ast` rule when… | Use a `semantic` rule when… |
-|---|---|---|
-| The violation is matchable with `grep`/`awk`/regex on raw text. | The violation is a **code-structure** pattern (call, cast, declaration) and grep would false-positive on strings/comments. | The violation requires **judgment** (e.g. "inline single-use variables"). |
-| You're shelling out to an existing tool (phpstan, eslint, pint). | You want deterministic, fast, whitespace-invariant matching. | A mechanical rule would have too many false positives. |
-| You want the rule to work in CI without any extra dependency. | You want the rule to work across formatting variants without regex acrobatics. | The rule depends on context (how a variable is used elsewhere) or is a prose style guideline. |
+Bully is the cop; native linters (ruff, biome, eslint, tsc, phpstan, rubocop, clippy, …) are the lawmakers. The PostToolUse hook runs on every Edit/Write regardless; the routing question is just *where a rule's definition lives*.
 
-**Order of preference when a rule could fit more than one engine:** `script` > `ast` > `semantic`. Script rules cost milliseconds. AST rules cost ~10-50 ms per file but eliminate the false-positive tax. Semantic rules cost an LLM turn. Promote noisy semantic rules to ast (or script) when they produce a stable mechanical fix.
+Priority order when authoring a rule:
+
+1. **Linter passthrough** -- an installed (or reasonably installable) linter can express the rule via a config change. The rule definition lives in the linter's config; `.bully.yml` gets a one-line passthrough (`engine: script`, `script: "<linter> <args> {file}"`). This is the default for anything a linter already covers cleanly.
+2. **`engine: ast`** -- structural pattern, no linter covers it. Matches code structure, so it ignores comments/strings/formatting. Requires `ast-grep` on `$PATH`.
+3. **`engine: script`** -- textual pattern with no structural false-positive risk (filename conventions, forbidden imports, required header comments, "no `TODO` without a ticket number").
+4. **`engine: semantic`** -- judgment only an LLM can make ("inline single-use vars", "error messages should be actionable", "this migration isn't idempotent").
+
+Engine-wise there are only two lanes -- `script` (bash subprocess) and `semantic` (evaluator subagent) -- but the four authoring categories pick the sharpest tool for each rule.
+
+| Use a linter passthrough when… | Use an `ast` rule when… | Use a `script` (grep) rule when… | Use a `semantic` rule when… |
+|---|---|---|---|
+| An installed linter's existing rule (or a rule plugin) covers the concern. Enabling it there is cheaper than writing a fresh pattern. | The violation is a **code-structure** pattern (call, cast, declaration) and grep would false-positive on strings/comments. | The violation is a genuinely textual pattern (path, header, literal string) with no structural ambiguity. | The violation requires **judgment**. A mechanical rule would have too many false positives. |
+| You want CI, IDE, and pre-commit to get the same rule for free. | You want deterministic, fast, whitespace-invariant matching. | You want the rule to work in CI without any extra dependency. | The rule depends on context (how a variable is used elsewhere) or is a prose style guideline. |
+
+**Why passthrough usually wins over grep.** Native linters already have mature rule catalogues, author-tested parsers, and IDE integration. Competing with them via grep produces brittle rules that break on edge cases they solved years ago. Reach for grep only when the pattern is genuinely textual (no code-structure nuance) and no linter expresses it.
+
+**Performance ballpark.** Linter passthroughs are a subprocess call -- whatever the linter costs (usually tens of ms). Raw `grep` script rules are milliseconds. AST rules are ~10-50 ms per file. Semantic rules cost an LLM turn. Promote noisy semantic rules to ast or passthrough when a stable mechanical fix exists.
 
 **AST prerequisite:** `ast-grep` must be on `$PATH` (`brew install ast-grep` or `cargo install ast-grep`). If it isn't, `engine: ast` rules are skipped at runtime with a one-line stderr hint — they do not block edits. Run `bully doctor` to see which rules would be skipped.
 

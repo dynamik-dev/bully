@@ -349,19 +349,23 @@ The `bully-init` skill bootstraps the project config. Run once.
 
 Scans the project root for manifest files. Detection reads specific version and framework information (e.g. `composer.json` with `laravel/framework` at `^12.0` and `php: ^8.4`), and that specificity shapes the baseline.
 
-### Migration (rules, not binaries)
+### Linter routing (the cop, not the lawmaker)
 
-Before generating baselines, the init skill scans for existing linting config and extracts rules where possible. For heavyweight linters (PHPStan, ESLint, Ruff, Biome, Clippy, Pint), it asks the user whether to:
+The init skill detects installed linters (ruff, biome, eslint, tsc, phpstan, rubocop, clippy, …) and offers to wire each one as a passthrough rule -- an `engine: script` rule whose command invokes the linter on the edited file. The linter keeps owning its rule definitions; bully's PostToolUse hook enforces "pass the linter" on every edit.
 
-1. Migrate rules natively (script or semantic — pipeline stays fast).
-2. Shell out from the pipeline (slower, requires binary installed everywhere the agent runs).
-3. Leave the linter in CI or pre-commit and skip the pipeline integration.
+This is the default routing for any rule an installed linter can express. Passthroughs:
 
-Only on choice (2) does the init skill add a shell-out script rule, and it does so with `severity: warning` by default to avoid blocking every edit on a slow external tool.
+1. Get the linter's full rule catalogue, author-tested parser, and IDE integration for free.
+2. Keep `.bully.yml` short -- a single rule replaces dozens of grep patterns.
+3. Stay legible in `bully-review` telemetry as one entry per tool.
+
+If a conventional linter for the stack is missing, the init skill *offers* to install it (with explicit user approval -- never silently, because it touches project manifests or CI). If the user declines, the rules route through `ast`/`script`/`semantic` inside `.bully.yml` directly.
+
+Custom rules (CLAUDE.md sections, arch tests, team conventions that no off-the-shelf linter expresses) go through the same four-option routing as `bully-author`: linter passthrough (if a plugin covers it) → ast → script → semantic.
 
 ### Baselines
 
-Agent-native by default: grep/awk primitives and semantic rules. External linter shell-outs are opt-in. The baseline set is deliberately minimal — 5-10 rules total, not per-language.
+The init skill seeds with whatever the installed linters already bring plus any custom rules the user migrated. The baseline set stays deliberately small -- the installed linters do the heavy lifting; `.bully.yml` holds what they can't express.
 
 ## CLAUDE.md integration
 

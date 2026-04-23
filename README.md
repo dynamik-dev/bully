@@ -13,20 +13,22 @@
 
 Bully is a lint pipeline for Claude Code. Every `Edit` / `Write` hits a `PostToolUse` hook that checks the change against `.bully.yml`. **Errors block the tool call -- Claude can't land the edit until it passes.** Warnings don't block. Any language; rules are scoped by file glob.
 
+**Linters are the lawmakers. Bully is the cop.** Your installed tools (ruff, biome, eslint, tsc, phpstan, clippy, …) own what "a violation" means. Bully owns making sure Claude can't slip one past the hook. The question is never *whether* bully enforces -- just where a rule's definition lives.
+
 ## The config
 
-A `.bully.yml` is a flat list of rules. Each rule says what to check, where it applies, how bad it is, and which engine runs it -- `script` (deterministic shell command), `ast` (structural pattern via [ast-grep](https://ast-grep.github.io/)), or `semantic` (natural-language rule the agent evaluates against the diff):
+A `.bully.yml` is a flat list of rules. Each rule says what to check, where it applies, how bad it is, and which engine runs it -- `script` (shell command, including a passthrough to an installed linter), `ast` (structural pattern via [ast-grep](https://ast-grep.github.io/)), or `semantic` (natural-language rule the agent evaluates against the diff):
 
 ```yaml
 schema_version: 1
 
 rules:
-  no-console-log:
-    description: "No `console.log` in committed source -- use the project logger."
+  ruff-check:
+    description: "Code must pass ruff check."
     engine: script
-    scope: ["src/**/*.ts", "src/**/*.tsx"]
+    scope: ["*.py"]
     severity: error
-    script: "grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0"
+    script: "ruff check --quiet {file}"
 
   no-any-cast:
     description: "No `as any` casts -- use a precise type or `unknown` plus narrowing."
@@ -46,7 +48,18 @@ rules:
     severity: warning
 ```
 
-The first rule runs a grep on every edited `.ts`/`.tsx`. The second matches the structural pattern with ast-grep -- ignores comments, strings, and formatting variants. The third ships the diff to the agent with the description as the evaluation prompt. No plugins, no DSL -- just globs, shell, ast patterns, and prose.
+The first rule is a **linter passthrough** -- bully runs `ruff check` on every edited `.py` file and blocks on nonzero exit. Ruff owns *which* checks run (configured in `ruff.toml`); bully owns enforcement on every edit. The second rule matches a structural pattern with ast-grep -- ignores comments, strings, and formatting variants. The third ships the diff to the agent with the description as the evaluation prompt. No plugins, no DSL -- just globs, shell, ast patterns, and prose.
+
+### Where rules live (four options, one cop)
+
+When authoring a rule, `/bully-author` routes it in priority order:
+
+1. **Linter passthrough** -- an installed (or reasonably installable) linter can express the rule via a config change. Rule definition lives in the linter's config; `.bully.yml` gets a one-line passthrough (`engine: script`, `script: "<linter> <args> {file}"`).
+2. **`engine: ast`** -- structural pattern no linter covers; `ast-grep` handles comments/strings/formatting correctly.
+3. **`engine: script`** -- textual pattern with no false-positive risk (filename conventions, forbidden imports, required headers).
+4. **`engine: semantic`** -- judgment only an LLM can make ("don't derive state with `useEffect`", "error messages should be actionable").
+
+Engine-wise there are only two lanes -- `script` (bash subprocess) and `semantic` (evaluator subagent) -- but the four authoring categories pick the sharpest tool for each rule.
 
 `engine: ast` requires `ast-grep` on `$PATH` (`brew install ast-grep`, `cargo install ast-grep`, or `pip install ast-grep-cli`). If missing, ast rules are skipped at runtime with a one-line stderr hint and `bully doctor` flags it.
 
@@ -167,7 +180,7 @@ Then add to `~/.claude/settings.json`:
 > /bully-init
 ```
 
-The init skill detects your stack, scans for existing linter configs, asks a couple of questions, and writes a baseline `.bully.yml`. If the examples catalog has rules for your stack, it offers them one-by-one -- you pick what to seed, and the selected rules get copied into your config. Review, tweak, commit.
+The init skill detects your stack, finds which linters are already installed (ruff, biome, eslint, tsc, phpstan, clippy, …), and offers to wire each one as a passthrough rule so bully runs it on every Edit/Write. If a conventional linter for your stack is missing, it *offers* to install it -- never silently, always with approval. Migrates custom rules from CLAUDE.md / arch tests through the same four-option routing (passthrough → ast → script → semantic). Creates `.bully/` so `/bully-review` has telemetry to read. Review, tweak, commit.
 
 ### 2. Adopting in a repo with existing violations
 
@@ -189,13 +202,9 @@ eval(expr); // bully-disable: no-eval reason: sandboxed input
 
 Use sparingly. Telemetry tracks disables so noisy rules surface in `/bully-review`.
 
-### 4. Telemetry (optional)
+### 4. Telemetry
 
-```bash
-mkdir .bully
-```
-
-One JSONL record per pipeline run lands in `.bully/log.jsonl`. Already in `.gitignore` -- per-developer data. After a few hundred edits, run `/bully-review` for noisy / dead / slow rule analysis.
+`/bully-init` creates `.bully/` and adds it to `.gitignore` by default. One JSONL record per pipeline run lands in `.bully/log.jsonl` -- per-developer data, never committed. After a few hundred edits, run `/bully-review` for noisy / dead / slow rule analysis. If you opted out of the directory during init, create it manually with `mkdir .bully` whenever you want telemetry to start recording.
 
 ### 5. Evolve the config
 
