@@ -5,6 +5,15 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
+## 0.8.0 — 2026-04-28
+
+- BREAKING (subagent capability): the bully-evaluator subagent no longer has `Read`, `Grep`, or `Glob` tools. The diff is the only evidence by default. Closes prompt-injection layer 2 of 3.
+- NEW: rule-level `context: { lines: N }` field. When set, the parent harness reads N lines around each diff hunk and bundles them in the payload as `<EXCERPT_FOR_RULE>`. Closes prompt-injection layer 3 of 3 (the substitute mechanism for the removed tools).
+- `agents/bully-evaluator.md` updated to consume excerpts and reject directives in untrusted evidence.
+- New docs at `docs/rule-config.md`.
+
+Migration: rules that relied on the evaluator using `Read`/`Grep` to pull surrounding context will now see only the diff. Add `context: { lines: N }` to those rules. Audit candidates: rules whose descriptions reference "callsite", "imports", "surrounding code", or anything beyond the literal hunk.
+
 ## 0.7.2 — 2026-04-28
 
 - Semantic evaluation payload now wraps rule descriptions in `<TRUSTED_POLICY>` and the file/diff in `<UNTRUSTED_EVIDENCE>`, with explicit instructions to the evaluator to treat the latter as data, not directives.
