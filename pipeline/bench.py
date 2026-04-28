@@ -125,15 +125,20 @@ def load_evaluator_system_prompt() -> str:
     return text.lstrip("\n")
 
 
-def count_tokens(payload: dict, *, system: str, use_api: bool = True) -> tuple[int, str]:
+def count_tokens(payload: str | dict, *, system: str = "", use_api: bool = True) -> tuple[int, str]:
     """Count input tokens for the given bully-evaluator payload.
+
+    `payload` may be a pre-formatted string (the new `_evaluator_input`
+    shape) or a dict (legacy callers). Strings are sent as-is; dicts
+    are JSON-serialized.
 
     Returns (token_count, method) where method is 'count_tokens' or 'proxy'.
 
     Uses the Anthropic `messages/count_tokens` endpoint when
     ANTHROPIC_API_KEY is set AND the anthropic SDK is importable AND
-    use_api is True. Falls back to `len(json.dumps(payload)) + len(system)`.
+    use_api is True. Falls back to `len(content) + len(system)`.
     """
+    content = payload if isinstance(payload, str) else json.dumps(payload)
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     anthropic = _import_anthropic() if use_api else None
     if use_api and api_key and anthropic is not None:
@@ -142,17 +147,23 @@ def count_tokens(payload: dict, *, system: str, use_api: bool = True) -> tuple[i
             resp = client.messages.count_tokens(
                 model=BENCH_MODEL,
                 system=system,
-                messages=[{"role": "user", "content": json.dumps(payload)}],
+                messages=[{"role": "user", "content": content}],
             )
             return int(resp.input_tokens), "count_tokens"
         except Exception:
             # Any API failure -> proxy. Bench must not crash on transient errors.
             pass
-    return len(json.dumps(payload)) + len(system), "proxy"
+    return len(content) + len(system), "proxy"
 
 
-def full_dispatch(payload: dict, *, system: str, max_tokens: int = 1024) -> tuple[int, int, str]:
+def full_dispatch(
+    payload: str | dict, *, system: str, max_tokens: int = 1024
+) -> tuple[int, int, str]:
     """Make a real `messages.create` call to capture input + output tokens.
+
+    `payload` may be a pre-formatted string (the new `_evaluator_input`
+    shape) or a dict (legacy callers). Strings are sent as-is; dicts
+    are JSON-serialized.
 
     Returns (input_tokens, output_tokens, method) where method is 'full'
     on a real round-trip. Falls back to count_tokens for input and
@@ -163,6 +174,7 @@ def full_dispatch(payload: dict, *, system: str, max_tokens: int = 1024) -> tupl
     Real model cost is paid each call -- use sparingly (e.g. one bench
     run for calibration, not per-edit).
     """
+    content = payload if isinstance(payload, str) else json.dumps(payload)
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     anthropic = _import_anthropic()
     if api_key and anthropic is not None:
@@ -172,7 +184,7 @@ def full_dispatch(payload: dict, *, system: str, max_tokens: int = 1024) -> tupl
                 model=BENCH_MODEL,
                 max_tokens=max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": json.dumps(payload)}],
+                messages=[{"role": "user", "content": content}],
             )
             return int(resp.usage.input_tokens), int(resp.usage.output_tokens), "full"
         except Exception:

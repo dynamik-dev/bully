@@ -8,11 +8,14 @@ See docs/plan.md for the active improvement plan.
 ## 0.7.2 — 2026-04-28
 
 - Semantic evaluation payload now wraps rule descriptions in `<TRUSTED_POLICY>` and the file/diff in `<UNTRUSTED_EVIDENCE>`, with explicit instructions to the evaluator to treat the latter as data, not directives.
-- The `_evaluator_input` field in the hook payload is now a pre-formatted string (was: dict). The bully skill passes it directly to the evaluator subagent without re-serialization.
-- `agents/bully-evaluator.md` rewritten to consume the new boundaries.
+- The `_evaluator_input` field in the hook payload is now a pre-formatted string (was: dict). The bully skill passes it directly to the evaluator subagent without re-serialization. **Breaking for skill consumers:** bully harness ≥0.7.2 must be paired with bully skill ≥0.7.2; older skill versions would JSON-encode the string, producing escaped tags. The bundled SKILL.md is updated.
+- Boundary tags in `_evaluator_input` are sanitized — diffs containing literal `</UNTRUSTED_EVIDENCE>` or other closing tags are neutralized so user-controlled content cannot break out of the untrusted block.
+- Synthetic line-anchor metadata moves into the `<TRUSTED_POLICY>` block (was: appended after the closing tag).
+- `agents/bully-evaluator.md` rewritten to consume the new boundaries and metadata.
 - `skills/bully/SKILL.md` updated: pass `_evaluator_input` through verbatim.
 - Renamed the dict-returning `build_semantic_payload` to `build_semantic_payload_dict` to disambiguate from the new string-returning helper. Internal callers in `pipeline/bench.py` and tests updated.
-- Closes prompt-injection layer 1 of 3.
+- `pipeline/bench.py`'s `count_tokens` and `full_dispatch` now accept `str | dict` payloads (was: dict only) so bench measurements remain accurate after the `_evaluator_input` shape change.
+- Closes prompt-injection layer 1 of 3 (PR 1c addresses tool boundary and per-rule context-include).
 
 ## 0.7.1 — 2026-04-28
 
