@@ -64,9 +64,27 @@ def test_explain_includes_match_reasoning(tmp_path):
     assert "**/*.php" in p.stdout
 
 
-def test_guide_zero_rules_exits_zero_with_message(tmp_path):
+def test_guide_with_only_globally_scoped_rule_matches_any_file(tmp_path):
     repo = _make_repo(tmp_path)
     p = _run(["guide", "README.md"], repo)
     assert p.returncode == 0
     # Only `any-file` (scope `**`) matches a top-level non-source file.
     assert "any-file" in p.stdout
+
+
+def test_guide_no_matching_rules_prints_no_rules_message(tmp_path):
+    cfg = tmp_path / ".bully.yml"
+    cfg.write_text(
+        """
+rules:
+  ts-only:
+    description: TS rule
+    severity: error
+    engine: script
+    scope: ['**/*.ts']
+    script: 'true'
+"""
+    )
+    p = _run(["guide", "README.md"], tmp_path)
+    assert p.returncode == 0
+    assert "No bully rules apply" in p.stdout

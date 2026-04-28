@@ -2990,8 +2990,8 @@ def _cmd_session_start(config_path: str | None) -> int:
         return 0  # silent -- bully not configured here
     try:
         rules = parse_config(path)
-    except Exception:
-        return 0  # silent on broken config; the PostToolUse path will surface it
+    except ConfigError:
+        return 0  # silent on config error; the PostToolUse path will surface it
     if not rules:
         return 0
     print(
