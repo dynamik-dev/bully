@@ -325,7 +325,7 @@ def run_fixture(
         semantic = [r for r in matching if r.engine == "semantic"]
         if semantic:
             system = load_evaluator_system_prompt()
-            payload = pl.build_semantic_payload(fx.file_path, fx.diff, passed, semantic)
+            payload = pl.build_semantic_payload_dict(fx.file_path, fx.diff, passed, semantic)
             if full:
                 input_tokens, output_tokens, method = full_dispatch(
                     payload["_evaluator_input"], system=system
@@ -588,7 +588,7 @@ def run_mode_b(
     system = load_evaluator_system_prompt()
 
     example_file = "src/example.py"
-    floor_payload = pl.build_semantic_payload(example_file, "", [], [])["_evaluator_input"]
+    floor_payload = pl.build_semantic_payload_dict(example_file, "", [], [])["_evaluator_input"]
     if not semantic_rules:
         floor_tokens, method = 0, "n/a-no-semantic-rules"
     else:
@@ -596,14 +596,14 @@ def run_mode_b(
 
     per_rule: list[dict] = []
     for r in semantic_rules:
-        payload = pl.build_semantic_payload(example_file, "", [], [r])["_evaluator_input"]
+        payload = pl.build_semantic_payload_dict(example_file, "", [], [r])["_evaluator_input"]
         tokens, _ = count_tokens(payload, system=system, use_api=use_api)
         per_rule.append({"id": r.id, "description": r.description, "tokens": tokens - floor_tokens})
     per_rule.sort(key=lambda x: x["tokens"], reverse=True)
 
     diff_scaling: list[dict] = []
     for size in (1, 10, 100, 1000):
-        payload = pl.build_semantic_payload(
+        payload = pl.build_semantic_payload_dict(
             example_file, _synth_diff(size, example_file), [], semantic_rules
         )["_evaluator_input"]
         tokens, _ = count_tokens(payload, system=system, use_api=use_api)
@@ -611,7 +611,7 @@ def run_mode_b(
 
     scopes: dict[str, int] = {}
     for r in semantic_rules:
-        payload = pl.build_semantic_payload(example_file, "", [], [r])["_evaluator_input"]
+        payload = pl.build_semantic_payload_dict(example_file, "", [], [r])["_evaluator_input"]
         tokens, _ = count_tokens(payload, system=system, use_api=use_api)
         for glob in r.scope:
             scopes[glob] = scopes.get(glob, 0) + (tokens - floor_tokens)

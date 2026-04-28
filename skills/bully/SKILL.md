@@ -42,7 +42,7 @@ AGENTIC LINT SEMANTIC EVALUATION REQUIRED:
     {"id": "no-inline-single-use", "description": "...", "severity": "error"},
     {"id": "full-type-hints", "description": "...", "severity": "warning"}
   ],
-  "_evaluator_input": { "file": "...", "diff": "...", "evaluate": [...] }
+  "_evaluator_input": "SEMANTIC EVALUATION REQUIRED\n\n<TRUSTED_POLICY>\n...rule policy...\n</TRUSTED_POLICY>\n\n<UNTRUSTED_EVIDENCE>\n...file + diff...\n</UNTRUSTED_EVIDENCE>\n"
 }
 ```
 
@@ -54,7 +54,7 @@ If the `diff` is short (roughly under 15 lines) AND there is only one rule in `e
 
 ### Dispatch (multi-rule or larger diffs)
 
-Parse the `additionalContext` JSON. If it contains a top-level `_evaluator_input` field, pass ONLY that field (re-serialized as JSON) as the subagent `prompt`. Otherwise fall back to the full payload. This keeps `passed_checks` out of the subagent's context while preserving it for your own use.
+Parse the `additionalContext` JSON. If it contains a top-level `_evaluator_input` field, pass that field's value DIRECTLY as the subagent `prompt` -- it's already formatted as a string with `<TRUSTED_POLICY>` and `<UNTRUSTED_EVIDENCE>` boundaries. Do NOT re-serialize it as JSON. If `_evaluator_input` is missing (older harness), fall back to re-serializing the full payload as JSON. This keeps `passed_checks` out of the subagent's context while preserving it for your own use.
 
 Call the Agent tool with `subagent_type: bully-evaluator` and a 3-5 word `description` (e.g. "Evaluate lint rules"). The agent returns:
 

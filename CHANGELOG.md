@@ -5,6 +5,15 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
+## 0.7.2 — 2026-04-28
+
+- Semantic evaluation payload now wraps rule descriptions in `<TRUSTED_POLICY>` and the file/diff in `<UNTRUSTED_EVIDENCE>`, with explicit instructions to the evaluator to treat the latter as data, not directives.
+- The `_evaluator_input` field in the hook payload is now a pre-formatted string (was: dict). The bully skill passes it directly to the evaluator subagent without re-serialization.
+- `agents/bully-evaluator.md` rewritten to consume the new boundaries.
+- `skills/bully/SKILL.md` updated: pass `_evaluator_input` through verbatim.
+- Renamed the dict-returning `build_semantic_payload` to `build_semantic_payload_dict` to disambiguate from the new string-returning helper. Internal callers in `pipeline/bench.py` and tests updated.
+- Closes prompt-injection layer 1 of 3.
+
 ## 0.7.1 — 2026-04-28
 
 - Analyzer now consumes `semantic_verdict` and `semantic_skipped` records (previously emitted but ignored). Closes the live coherence drift between `docs/telemetry.md`, `pipeline/analyzer.py`, and `skills/bully-review/SKILL.md`.

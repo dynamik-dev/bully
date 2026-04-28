@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline import Rule, build_semantic_payload, run_pipeline
+from pipeline import Rule, build_semantic_payload_dict, run_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -28,7 +28,7 @@ def test_payload_includes_file_and_diff():
             severity="error",
         ),
     ]
-    payload = build_semantic_payload("test.php", "+ new line", ["no-compact"], rules)
+    payload = build_semantic_payload_dict("test.php", "+ new line", ["no-compact"], rules)
     assert payload["file"] == "test.php"
     assert payload["diff"] == "+ new line"
 
@@ -37,7 +37,7 @@ def test_payload_includes_passed_checks():
     rules = [
         Rule(id="test-rule", description="Test", engine="semantic", scope="*", severity="error"),
     ]
-    payload = build_semantic_payload("test.php", "diff", ["no-compact", "no-db-facade"], rules)
+    payload = build_semantic_payload_dict("test.php", "diff", ["no-compact", "no-db-facade"], rules)
     assert payload["passed_checks"] == ["no-compact", "no-db-facade"]
 
 
@@ -48,7 +48,7 @@ def test_payload_includes_semantic_rules():
             id="rule-b", description="Second rule", engine="semantic", scope="*", severity="warning"
         ),
     ]
-    payload = build_semantic_payload("test.php", "diff", [], rules)
+    payload = build_semantic_payload_dict("test.php", "diff", [], rules)
     assert len(payload["evaluate"]) == 2
     assert payload["evaluate"][0]["id"] == "rule-a"
     assert payload["evaluate"][0]["description"] == "First rule"
