@@ -299,4 +299,4 @@ Reports the input-token cost of the given config per invocation: floor tokens, p
 
 Both modes use Anthropic's `messages/count_tokens` endpoint when `ANTHROPIC_API_KEY` is set and the optional `anthropic` SDK is installed (`pip install -e ".[bench]"`). Without either, both modes fall back to a `len(json.dumps(payload))` proxy and tag the output `method: proxy`.
 
-The bench does not make real model calls — only `count_tokens`, which is free and does not spend credits.
+By default the bench only calls `count_tokens`, which is free. Pass `--full` to dispatch real evaluator runs against fixtures (uses `messages.create` and spends credits — opt-in only).

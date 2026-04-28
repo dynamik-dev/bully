@@ -17,12 +17,14 @@ Audit `.bully.yml` using the telemetry log at `.bully/log.jsonl`. See `docs/tele
 - `.bully.yml` and `.bully/log.jsonl` both exist.
 - If the log is empty, stop and tell the user to make a handful of edits first -- classifying an empty log flags every rule as dead.
 
-## Known gap: semantic rules are not logged
+## Semantic rule observability
 
-Per `docs/telemetry.md` and `docs/plan.md` section 3.4, only script-rule verdicts are written to `log.jsonl` today. Semantic-rule outcomes are not yet captured, so:
+Both script and semantic rule verdicts are logged. Semantic rules emit two extra record types beyond the per-edit `rules:` array:
 
-- "Dead" classification applies to **script rules only**. A semantic rule that looks dead in the report may actually be firing.
-- Do not recommend removing a semantic rule based on zero hits. Flag it as "not yet observable" instead.
+- `semantic_verdict` — pass/violation reported by the evaluator skill once it finishes (see `docs/telemetry.md`).
+- `semantic_skipped` — pre-dispatch can't-match filters fired (whitespace only, comment only, etc.).
+
+The analyzer counts `semantic_verdict` `violation` as a fire and `pass` as a pass. `semantic_skipped` keeps a rule out of the dead bucket while contributing zero to the violation rate. If a semantic rule appears dead, it genuinely was never considered in the window — recommend the same retirement path you would for a dead script rule.
 
 ## Step 1: Run the analyzer
 

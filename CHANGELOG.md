@@ -5,6 +5,13 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
+## 0.7.1 — 2026-04-28
+
+- Analyzer now consumes `semantic_verdict` and `semantic_skipped` records (previously emitted but ignored). Closes the live coherence drift between `docs/telemetry.md`, `pipeline/analyzer.py`, and `skills/bully-review/SKILL.md`.
+- `format_report` adds a `skipped=` column.
+- `bully-review` SKILL.md no longer claims semantic rules are unobservable.
+- `README.md` corrects the bench description (`--full` does make real model calls).
+
 ## [0.7.0] - 2026-04-26
 ### Fixed
 - **Script output parser swallowed errors from tools with columnar or wrapped output.** A live user report on a Laravel package showed phpstan's indented table produced a single `line ?:` violation whose description was 500 chars of separator noise truncated mid-identifier (`"🪪  mis"`). Root cause: `parse_script_output` matched regexes without per-line lstrip, so indented rows fell into the unmatched bucket, then the entire unmatched output was joined and head-truncated to 500 chars — eating the preamble and dropping the signal.

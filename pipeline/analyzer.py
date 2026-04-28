@@ -52,6 +52,7 @@ def analyze(
             "fires": 0,
             "passes": 0,
             "evaluate_requested": 0,
+            "skipped": 0,
             "latencies": [],
             "files": set(),
         }
@@ -59,7 +60,54 @@ def analyze(
     }
 
     for rec in records:
+        rec_type = rec.get("type")
         file_ = rec.get("file", "")
+
+        if rec_type == "semantic_verdict":
+            rid = rec.get("rule")
+            if rid is None:
+                continue
+            bucket = by_rule.setdefault(
+                rid,
+                {
+                    "fires": 0,
+                    "passes": 0,
+                    "evaluate_requested": 0,
+                    "skipped": 0,
+                    "latencies": [],
+                    "files": set(),
+                },
+            )
+            verdict = rec.get("verdict")
+            if verdict == "violation":
+                bucket["fires"] += 1
+            elif verdict == "pass":
+                bucket["passes"] += 1
+            if file_:
+                bucket["files"].add(file_)
+            continue
+
+        if rec_type == "semantic_skipped":
+            rid = rec.get("rule")
+            if rid is None:
+                continue
+            bucket = by_rule.setdefault(
+                rid,
+                {
+                    "fires": 0,
+                    "passes": 0,
+                    "evaluate_requested": 0,
+                    "skipped": 0,
+                    "latencies": [],
+                    "files": set(),
+                },
+            )
+            bucket["skipped"] += 1
+            if file_:
+                bucket["files"].add(file_)
+            continue
+
+        # Default: treat as a rule-array record (existing per-edit shape).
         for rr in rec.get("rules", []):
             rid = rr.get("id")
             if rid is None:
@@ -70,6 +118,7 @@ def analyze(
                     "fires": 0,
                     "passes": 0,
                     "evaluate_requested": 0,
+                    "skipped": 0,
                     "latencies": [],
                     "files": set(),
                 },
@@ -96,8 +145,9 @@ def analyze(
         fires = bucket["fires"]
         passes = bucket["passes"]
         requested = bucket["evaluate_requested"]
+        skipped = bucket["skipped"]
         latencies = bucket["latencies"]
-        total_invocations = fires + passes + requested
+        total_invocations = fires + passes + requested + skipped
 
         mean_latency = statistics.fmean(latencies) if latencies else 0.0
         violation_rate = fires / (fires + passes) if (fires + passes) else 0.0
@@ -106,6 +156,7 @@ def analyze(
             "fires": fires,
             "passes": passes,
             "evaluate_requested": requested,
+            "skipped": skipped,
             "invocations": total_invocations,
             "files_touched": len(bucket["files"]),
             "mean_latency_ms": round(mean_latency, 1),
@@ -153,6 +204,7 @@ def format_report(report: dict) -> str:
                 f"  - {rid}  fires={row.get('fires', 0)} "
                 f"passes={row.get('passes', 0)} "
                 f"requested={row.get('evaluate_requested', 0)} "
+                f"skipped={row.get('skipped', 0)} "
                 f"rate={row.get('violation_rate', 0):.0%} "
                 f"avg_ms={row.get('mean_latency_ms', 0):.0f}"
             )
@@ -181,6 +233,7 @@ def format_report(report: dict) -> str:
             lines.append(
                 f"  - {rid}  fires={row['fires']} passes={row['passes']} "
                 f"requested={row['evaluate_requested']} "
+                f"skipped={row['skipped']} "
                 f"invocations={row['invocations']} files={row['files_touched']} "
                 f"rate={row['violation_rate']:.0%} avg_ms={row['mean_latency_ms']:.0f}"
             )
