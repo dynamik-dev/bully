@@ -27,7 +27,7 @@ from pathlib import Path, PurePath
 # pyproject.toml. Stamped into the `session_init` telemetry record so the
 # analyzer can attribute records back to the producer version. Bump this
 # whenever you bump the project version.
-BULLY_VERSION = "0.8.1"
+BULLY_VERSION = "0.8.2"
 TELEMETRY_SCHEMA_VERSION = 1
 
 # ---------------------------------------------------------------------------

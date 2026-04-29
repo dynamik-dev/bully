@@ -119,8 +119,11 @@ def _claude_cmd(
         )
         return proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired as exc:
-        return (exc.stdout or "") if isinstance(exc.stdout, str) else "", \
-               (exc.stderr or "") if isinstance(exc.stderr, str) else "", 124
+        return (
+            (exc.stdout or "") if isinstance(exc.stdout, str) else "",
+            (exc.stderr or "") if isinstance(exc.stderr, str) else "",
+            124,
+        )
 
 
 def _parse_stream_events(raw: str) -> list[dict[str, Any]]:
@@ -154,9 +157,7 @@ def _render_transcript(events: list[dict[str, Any]]) -> str:
                     name = block.get("name", "?")
                     inp = block.get("input", {})
                     lines.append(
-                        f"## Tool call: {name}\n\n```json\n"
-                        + json.dumps(inp, indent=2)
-                        + "\n```\n"
+                        f"## Tool call: {name}\n\n```json\n" + json.dumps(inp, indent=2) + "\n```\n"
                     )
                 elif btype == "thinking":
                     lines.append("## (thinking)\n\n" + block.get("thinking", "") + "\n")
@@ -206,10 +207,7 @@ def _run_conversation(
     gate_results: list[dict[str, Any]] = []
     for i, turn in enumerate(turns):
         user_msg = turn["user"]
-        if i == 0:
-            session_args = ["--session-id", session_id]
-        else:
-            session_args = ["--resume", session_id]
+        session_args = ["--session-id", session_id] if i == 0 else ["--resume", session_id]
         t0 = time.perf_counter()
         stdout, stderr, rc = _claude_cmd(
             user_msg,
@@ -233,23 +231,27 @@ def _run_conversation(
                         turn_text += b.get("text", "") + "\n"
                     elif b.get("type") == "tool_use":
                         n_tool_calls += 1
-        per_turn.append({
-            "turn_index": i,
-            "user_msg_preview": user_msg[:120],
-            "elapsed_seconds": round(elapsed, 2),
-            "returncode": rc,
-            "n_tool_calls": n_tool_calls,
-        })
+        per_turn.append(
+            {
+                "turn_index": i,
+                "user_msg_preview": user_msg[:120],
+                "elapsed_seconds": round(elapsed, 2),
+                "returncode": rc,
+                "n_tool_calls": n_tool_calls,
+            }
+        )
         # Gate check.
         required = turn.get("assistant_contains") or []
         if required:
             missing = [p for p in required if p.lower() not in turn_text.lower()]
-            gate_results.append({
-                "turn_index": i,
-                "required": required,
-                "missing": missing,
-                "passed": not missing,
-            })
+            gate_results.append(
+                {
+                    "turn_index": i,
+                    "required": required,
+                    "missing": missing,
+                    "passed": not missing,
+                }
+            )
         if rc != 0 and rc != 124:
             # Hard error; stop the conversation.
             break
@@ -299,15 +301,17 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             # Allow only Skill so Claude either invokes the skill (signal) or
             # replies in text. AskUserQuestion is blocked to prevent hangs in -p.
             extra_args=[
-                "--allowedTools", "Skill",
-                "--disallowedTools", "AskUserQuestion",
+                "--allowedTools",
+                "Skill",
+                "--disallowedTools",
+                "AskUserQuestion",
             ],
             timeout_s=args.timeout_s,
         )
         elapsed = time.perf_counter() - t0
         events = _parse_stream_events(stdout)
         triggered = _detect_skill_invocation(events, skill_name)
-        passed = (triggered == expected)
+        passed = triggered == expected
         # For debugging: capture which tool calls happened and a final-text snippet.
         tool_calls_seen: list[dict[str, Any]] = []
         final_text = ""
@@ -317,24 +321,28 @@ def cmd_triggers(args: argparse.Namespace) -> int:
                     if not isinstance(block, dict):
                         continue
                     if block.get("type") == "tool_use":
-                        tool_calls_seen.append({
-                            "name": block.get("name", ""),
-                            "input_keys": list((block.get("input") or {}).keys()),
-                            "input_preview": json.dumps(block.get("input") or {})[:200],
-                        })
+                        tool_calls_seen.append(
+                            {
+                                "name": block.get("name", ""),
+                                "input_keys": list((block.get("input") or {}).keys()),
+                                "input_preview": json.dumps(block.get("input") or {})[:200],
+                            }
+                        )
                     elif block.get("type") == "text":
                         final_text = block.get("text", "")[-400:]
-        results.append({
-            "query": query,
-            "should_trigger": expected,
-            "triggered": triggered,
-            "passed": passed,
-            "elapsed_seconds": round(elapsed, 2),
-            "claude_returncode": rc,
-            "tool_calls_seen": tool_calls_seen,
-            "final_assistant_text_tail": final_text,
-            "stderr_tail": (stderr or "")[-400:],
-        })
+        results.append(
+            {
+                "query": query,
+                "should_trigger": expected,
+                "triggered": triggered,
+                "passed": passed,
+                "elapsed_seconds": round(elapsed, 2),
+                "claude_returncode": rc,
+                "tool_calls_seen": tool_calls_seen,
+                "final_assistant_text_tail": final_text,
+                "stderr_tail": (stderr or "")[-400:],
+            }
+        )
 
     summary = {
         "skill_name": skill_name,
@@ -420,26 +428,36 @@ def cmd_execute(args: argparse.Namespace) -> int:
         grading_path = ws / "grading.json"
 
         is_multi_turn = bool(ev.get("turns"))
-        meta_path.write_text(json.dumps({
-            "eval_id": eid,
-            "eval_name": ev.get("name"),
-            "skill_name": skill_name,
-            "prompt": ev.get("prompt"),
-            "turns": ev.get("turns"),
-            "mode": "multi-turn" if is_multi_turn else "single-turn",
-            "files": ev.get("files", []),
-            "expected_output": ev.get("expected_output"),
-            "expectations": ev["expectations"],
-            "executor_model": args.executor_model,
-            "grader_model": args.grader_model,
-            "timestamp": _now_iso(),
-        }, indent=2))
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "eval_id": eid,
+                    "eval_name": ev.get("name"),
+                    "skill_name": skill_name,
+                    "prompt": ev.get("prompt"),
+                    "turns": ev.get("turns"),
+                    "mode": "multi-turn" if is_multi_turn else "single-turn",
+                    "files": ev.get("files", []),
+                    "expected_output": ev.get("expected_output"),
+                    "expectations": ev["expectations"],
+                    "executor_model": args.executor_model,
+                    "grader_model": args.grader_model,
+                    "timestamp": _now_iso(),
+                },
+                indent=2,
+            )
+        )
 
-        print(f"\n[execute] eval-{eid} {slug}  ({'multi-turn' if is_multi_turn else 'single-turn'})", flush=True)
+        print(
+            f"\n[execute] eval-{eid} {slug}  ({'multi-turn' if is_multi_turn else 'single-turn'})",
+            flush=True,
+        )
         print(f"  workspace: {outputs}", flush=True)
         executor_extra = [
-            "--permission-mode", args.executor_permission_mode,
-            "--disallowedTools", "AskUserQuestion",
+            "--permission-mode",
+            args.executor_permission_mode,
+            "--disallowedTools",
+            "AskUserQuestion",
         ]
         t0 = time.perf_counter()
         if is_multi_turn:
@@ -451,10 +469,15 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 timeout_s=args.executor_timeout_s,
             )
             (ws / "session_id.txt").write_text(session_id)
-            (ws / "turns.json").write_text(json.dumps({
-                "per_turn": per_turn,
-                "gate_results": gate_results,
-            }, indent=2))
+            (ws / "turns.json").write_text(
+                json.dumps(
+                    {
+                        "per_turn": per_turn,
+                        "gate_results": gate_results,
+                    },
+                    indent=2,
+                )
+            )
             stdout = "\n".join(json.dumps(e) for e in events)
             stderr = ""
         else:
@@ -478,14 +501,17 @@ def cmd_execute(args: argparse.Namespace) -> int:
         grader_prompt = (
             GRADER_PROMPT_PATH.read_text()
             + "\n\n## Run inputs\n\n"
-            + json.dumps({
-                "skill_name": skill_name,
-                "eval_prompt": ev.get("prompt") or [t.get("user") for t in ev.get("turns", [])],
-                "expectations": ev["expectations"],
-                "transcript_path": str(transcript_path),
-                "outputs_dir": str(outputs),
-                "grading_path": str(grading_path),
-            }, indent=2)
+            + json.dumps(
+                {
+                    "skill_name": skill_name,
+                    "eval_prompt": ev.get("prompt") or [t.get("user") for t in ev.get("turns", [])],
+                    "expectations": ev["expectations"],
+                    "transcript_path": str(transcript_path),
+                    "outputs_dir": str(outputs),
+                    "grading_path": str(grading_path),
+                },
+                indent=2,
+            )
         )
         t1 = time.perf_counter()
         g_stdout, g_stderr, g_rc = _claude_cmd(
@@ -493,8 +519,10 @@ def cmd_execute(args: argparse.Namespace) -> int:
             model=args.grader_model,
             cwd=REPO_ROOT,
             extra_args=[
-                "--permission-mode", "bypassPermissions",
-                "--disallowedTools", "AskUserQuestion",
+                "--permission-mode",
+                "bypassPermissions",
+                "--disallowedTools",
+                "AskUserQuestion",
             ],
             timeout_s=args.grader_timeout_s,
         )
@@ -507,9 +535,15 @@ def cmd_execute(args: argparse.Namespace) -> int:
         if grading_path.exists():
             grading = json.loads(grading_path.read_text())
             pr = grading.get("summary", {}).get("pass_rate", 0.0)
-            print(f"  graded pass_rate={pr:.2f}  exec={exec_elapsed:.1f}s  grade={grader_elapsed:.1f}s", flush=True)
+            print(
+                f"  graded pass_rate={pr:.2f}  exec={exec_elapsed:.1f}s  grade={grader_elapsed:.1f}s",
+                flush=True,
+            )
         else:
-            print(f"  WARN no grading.json at {grading_path} -- grader may have failed (rc={g_rc})", flush=True)
+            print(
+                f"  WARN no grading.json at {grading_path} -- grader may have failed (rc={g_rc})",
+                flush=True,
+            )
             grading = None
 
         # Quality grader (orthogonal-quality post-grading).
@@ -521,15 +555,19 @@ def cmd_execute(args: argparse.Namespace) -> int:
             quality_prompt = (
                 QUALITY_PROMPT_PATH.read_text()
                 + "\n\n## Run inputs\n\n"
-                + json.dumps({
-                    "skill_name": skill_name,
-                    "skill_path": str(skill_path),
-                    "eval_prompt": ev.get("prompt") or [t.get("user") for t in ev.get("turns", [])],
-                    "transcript_path": str(transcript_path),
-                    "outputs_dir": str(outputs),
-                    "grading_path": str(grading_path),
-                    "quality_path": str(quality_path),
-                }, indent=2)
+                + json.dumps(
+                    {
+                        "skill_name": skill_name,
+                        "skill_path": str(skill_path),
+                        "eval_prompt": ev.get("prompt")
+                        or [t.get("user") for t in ev.get("turns", [])],
+                        "transcript_path": str(transcript_path),
+                        "outputs_dir": str(outputs),
+                        "grading_path": str(grading_path),
+                        "quality_path": str(quality_path),
+                    },
+                    indent=2,
+                )
             )
             t2 = time.perf_counter()
             q_stdout, q_stderr, q_rc = _claude_cmd(
@@ -537,8 +575,10 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 model=args.grader_model,
                 cwd=REPO_ROOT,
                 extra_args=[
-                    "--permission-mode", "bypassPermissions",
-                    "--disallowedTools", "AskUserQuestion",
+                    "--permission-mode",
+                    "bypassPermissions",
+                    "--disallowedTools",
+                    "AskUserQuestion",
                 ],
                 timeout_s=args.grader_timeout_s,
             )
@@ -553,38 +593,46 @@ def cmd_execute(args: argparse.Namespace) -> int:
             else:
                 print(f"  WARN no quality.json (rc={q_rc})", flush=True)
 
-        timing_path.write_text(json.dumps({
-            "executor_duration_seconds": round(exec_elapsed, 2),
-            "grader_duration_seconds": round(grader_elapsed, 2),
-            "quality_grader_duration_seconds": round(quality_elapsed, 2),
-            "total_duration_seconds": round(exec_elapsed + grader_elapsed + quality_elapsed, 2),
-        }, indent=2))
-
-        summaries.append({
-            "eval_id": eid,
-            "eval_name": ev.get("name"),
-            "configuration": "with_skill",
-            "run_number": 1,
-            "mode": "multi-turn" if is_multi_turn else "single-turn",
-            "result": {
-                "pass_rate": (grading or {}).get("summary", {}).get("pass_rate"),
-                "passed": (grading or {}).get("summary", {}).get("passed"),
-                "failed": (grading or {}).get("summary", {}).get("failed"),
-                "total": (grading or {}).get("summary", {}).get("total"),
-                "time_seconds": round(exec_elapsed, 2),
-                "tool_calls": sum(_count_tool_calls(events).values()),
-                "errors": 0,
-                "quality_overall": (quality or {}).get("overall_score"),
-                "quality_scores": {
-                    k: v.get("value")
-                    for k, v in (quality or {}).get("scores", {}).items()
+        timing_path.write_text(
+            json.dumps(
+                {
+                    "executor_duration_seconds": round(exec_elapsed, 2),
+                    "grader_duration_seconds": round(grader_elapsed, 2),
+                    "quality_grader_duration_seconds": round(quality_elapsed, 2),
+                    "total_duration_seconds": round(
+                        exec_elapsed + grader_elapsed + quality_elapsed, 2
+                    ),
                 },
-            },
-            "expectations": (grading or {}).get("expectations", []),
-            "tool_calls_breakdown": _count_tool_calls(events),
-            "gate_results": gate_results,
-            "quality_summary": (quality or {}).get("summary"),
-        })
+                indent=2,
+            )
+        )
+
+        summaries.append(
+            {
+                "eval_id": eid,
+                "eval_name": ev.get("name"),
+                "configuration": "with_skill",
+                "run_number": 1,
+                "mode": "multi-turn" if is_multi_turn else "single-turn",
+                "result": {
+                    "pass_rate": (grading or {}).get("summary", {}).get("pass_rate"),
+                    "passed": (grading or {}).get("summary", {}).get("passed"),
+                    "failed": (grading or {}).get("summary", {}).get("failed"),
+                    "total": (grading or {}).get("summary", {}).get("total"),
+                    "time_seconds": round(exec_elapsed, 2),
+                    "tool_calls": sum(_count_tool_calls(events).values()),
+                    "errors": 0,
+                    "quality_overall": (quality or {}).get("overall_score"),
+                    "quality_scores": {
+                        k: v.get("value") for k, v in (quality or {}).get("scores", {}).items()
+                    },
+                },
+                "expectations": (grading or {}).get("expectations", []),
+                "tool_calls_breakdown": _count_tool_calls(events),
+                "gate_results": gate_results,
+                "quality_summary": (quality or {}).get("summary"),
+            }
+        )
 
     # Aggregate across this iteration.
     benchmark = _aggregate(skill_name, args.executor_model, summaries)
@@ -602,7 +650,11 @@ def _aggregate(skill_name: str, executor_model: str, runs: list[dict[str, Any]])
     for config, rs in by_config.items():
         rates = [r["result"].get("pass_rate") or 0.0 for r in rs]
         times = [r["result"].get("time_seconds") or 0.0 for r in rs]
-        qualities = [r["result"].get("quality_overall") for r in rs if r["result"].get("quality_overall") is not None]
+        qualities = [
+            r["result"].get("quality_overall")
+            for r in rs
+            if r["result"].get("quality_overall") is not None
+        ]
         summary[config] = {
             "pass_rate": _stats(rates),
             "time_seconds": _stats(times),
@@ -649,9 +701,13 @@ def _render_benchmark_md(b: dict[str, Any]) -> str:
         res = r["result"]
         qos = res.get("quality_overall")
         qbits = res.get("quality_scores", {})
-        qstr = f"{qos}" + (f" ({','.join(f'{k[0]}={v}' for k,v in qbits.items())})" if qbits else "") if qos is not None else "-"
+        qstr = (
+            f"{qos}" + (f" ({','.join(f'{k[0]}={v}' for k, v in qbits.items())})" if qbits else "")
+            if qos is not None
+            else "-"
+        )
         lines.append(
-            f"| {r['eval_id']} | {r.get('eval_name','')} | {r.get('mode','single-turn')} | "
+            f"| {r['eval_id']} | {r.get('eval_name', '')} | {r.get('mode', 'single-turn')} | "
             f"{res.get('pass_rate')} | {qstr} | "
             f"{res.get('time_seconds')} | {res.get('tool_calls')} |"
         )
@@ -670,10 +726,12 @@ def main(argv: list[str] | None = None) -> int:
     pt = sub.add_parser("triggers", help="Run triggering eval against triggers.json")
     pt.add_argument("--skill", required=True, help="path to skill dir, e.g. skills/bully-init")
     pt.add_argument(
-        "--timeout-s", type=float, default=300.0,
+        "--timeout-s",
+        type=float,
+        default=300.0,
         help="per-query timeout (default 300s). claude -p only flushes stream-json "
-             "on natural completion -- on SIGKILL we lose all events, so the timeout "
-             "needs to be high enough that most queries complete on their own.",
+        "on natural completion -- on SIGKILL we lose all events, so the timeout "
+        "needs to be high enough that most queries complete on their own.",
     )
     pt.set_defaults(func=cmd_triggers)
 
@@ -681,20 +739,26 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--skill", required=True, help="path to skill dir, e.g. skills/bully-init")
     pe.add_argument("--only", help="comma-separated eval ids to run (default: all)")
     pe.add_argument(
-        "--executor-timeout-s", type=float, default=600.0,
+        "--executor-timeout-s",
+        type=float,
+        default=600.0,
         help="executor per-eval timeout (default 600s)",
     )
     pe.add_argument(
-        "--grader-timeout-s", type=float, default=300.0,
+        "--grader-timeout-s",
+        type=float,
+        default=300.0,
         help="grader per-eval timeout (default 300s)",
     )
     pe.add_argument(
-        "--executor-permission-mode", default="bypassPermissions",
+        "--executor-permission-mode",
+        default="bypassPermissions",
         choices=["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"],
         help="permission mode for the executor (default bypassPermissions for fixture-only writes)",
     )
     pe.add_argument(
-        "--skip-quality", action="store_true",
+        "--skip-quality",
+        action="store_true",
         help="skip the orthogonal quality grader (saves ~1 grader call per eval)",
     )
     pe.set_defaults(func=cmd_execute)

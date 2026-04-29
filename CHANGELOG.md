@@ -5,6 +5,17 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
+## 0.8.2 — 2026-04-29
+
+### Added
+- NEW: `bench/` eval harness for the four bundled skills (`bully`, `bully-author`, `bully-init`, `bully-review`). Two eval modes: `triggers` (does Claude consult the skill given a query?) and `execute` (once triggered, is the output correct?), with results graded against assertion lists by an LLM grader and an orthogonal-quality grader (1-5 scoring on `tool_efficiency`, `faithfulness`, `calibration`, `instruction_adherence`). Workspace layout follows Anthropic's `skill-creator` schemas so artifacts are compatible with the upstream eval-viewer. Multi-turn evals supported via `--session-id` / `--resume` to test skills whose protocol spans multiple user turns. README at `bench/README.md`.
+- NEW: per-skill `evals/triggers.json`, `evals/evals.json`, and fixture trees seeded for all four bundled skills. Includes one multi-turn `bully-author` eval that exercises the full ask-then-author-then-confirm conversation.
+- README updates clarifying the "hybrid agent-harness sensor" framing.
+
+### Changed
+- `skills/bully-author/SKILL.md`: fixture-testing protocol now starts with a `$BULLY` binary-resolution one-liner (mirrors `bully-init`) so the protocol still works when `bully` is not on `PATH` (the common case for plugin installs that haven't been symlinked). All in-skill `bully …` invocations updated to `$BULLY …`.
+- `skills/bully-author/SKILL.md`: added a MANDATORY step to the fixture-testing protocol — `$BULLY --trust --config /tmp/bully-draft.yml` before running any lint against the draft. Untrusted configs return `status: untrusted` with rules silently skipped, so the lint result was non-load-bearing without this step. Invariants line updated to list trust as a precondition.
+
 ## 0.8.1 — 2026-04-28
 
 - NEW: `session_init` telemetry record. SessionStart writes one stamp per Claude Code session: `{"type": "session_init", "bully_version": "0.8.1", "schema_version": 1, "ts": ...}`. Lets the analyzer (and forensic readers of older logs) attribute later records back to the bully release that produced them. Cheaper than tagging every record with the version.

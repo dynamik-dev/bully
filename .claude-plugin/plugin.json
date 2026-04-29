@@ -1,7 +1,7 @@
 {
   "name": "bully",
   "description": "Hybrid agent-harness sensor for Claude Code. Computational + inferential rule lanes, subagent context firewall, scoped feedforward, session-aware verification.",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "author": {
     "name": "dynamik-dev"
   },
