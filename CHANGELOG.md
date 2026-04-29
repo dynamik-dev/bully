@@ -5,6 +5,9 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
+### Fixed
+- Hook semantic-eval contract drift. `_hook_mode` was re-rendering `additionalContext` from the outer (excerpt-stripped) `evaluate` array, so `<EXCERPT_FOR_RULE>` blocks declared with `context: { lines: N }` were silently dropped on the wire and the payload shape didn't match what `skills/bully/SKILL.md` (§ "When semantic eval requested") instructs the skill to parse. The dispatcher now forwards the dict that `run_pipeline` already produced — header `AGENTIC LINT SEMANTIC EVALUATION REQUIRED:` followed by JSON with `file/diff/passed_checks/evaluate/_evaluator_input` — preserving the per-rule excerpts inside `_evaluator_input`. New e2e test `test_semantic_eval_emits_dict_payload_with_excerpt` pins the contract: header prefix, JSON-parseable body, all required keys, surviving `context.lines`, and `<EXCERPT_FOR_RULE rule="…">` present in `_evaluator_input`.
+
 ## 0.8.2 — 2026-04-29
 
 ### Added

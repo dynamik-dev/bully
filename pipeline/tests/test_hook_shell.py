@@ -191,7 +191,91 @@ def test_no_config_found_exits_zero(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 6. Hook is a thin shim -- exits via python3 exec
+# 6. Semantic eval contract: dict-shaped JSON additionalContext with excerpts
+# ---------------------------------------------------------------------------
+
+
+SEMANTIC_RULE_WITH_CONTEXT_YAML = (
+    "rules:\n"
+    "  needs-context:\n"
+    '    description: "Semantic rule that wants surrounding context"\n'
+    "    engine: semantic\n"
+    '    scope: "*.py"\n'
+    "    severity: warning\n"
+    "    context:\n"
+    "      lines: 3\n"
+)
+
+
+def test_semantic_eval_emits_dict_payload_with_excerpt(tmp_path):
+    """The PostToolUse hook contract (skills/bully/SKILL.md §32):
+
+    `additionalContext` MUST start with the AGENTIC LINT header and carry
+    a JSON body with `file`, `diff`, `passed_checks`, `evaluate`, and a
+    `_evaluator_input` string that includes <EXCERPT_FOR_RULE> when the
+    rule requested context. Regression guard: re-rendering from the
+    stripped outer `evaluate` array used to drop excerpts entirely.
+    """
+    project = _write_project(
+        tmp_path,
+        {
+            "src/foo.py": (
+                "def foo():\n"
+                "    a = 1\n"
+                "    b = 2\n"
+                "    c = 3\n"
+                "    d = 4\n"
+                "    return a + b + c + d\n"
+            )
+        },
+        SEMANTIC_RULE_WITH_CONTEXT_YAML,
+    )
+    target = project / "src" / "foo.py"
+    # Multi-line edit: the can-match filter (`_can_match_diff`) drops
+    # semantic rules when fewer than two lines were added, so ensure
+    # the hunk crosses that threshold.
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(target),
+            "old_string": "    d = 4\n    return a + b + c + d",
+            "new_string": "    d = 4\n    e = 5\n    f = 6\n    return a + b + c + d + e + f",
+        },
+    }
+    r = _run_hook(json.dumps(payload), project)
+    assert r.returncode == 0, f"stderr={r.stderr}"
+    assert r.stdout.strip(), f"expected hookSpecificOutput on stdout; stderr={r.stderr!r}"
+
+    data = json.loads(r.stdout)
+    assert data["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    assert isinstance(ctx, str)
+
+    header = "AGENTIC LINT SEMANTIC EVALUATION REQUIRED:"
+    assert ctx.startswith(header), f"missing header; got: {ctx[:80]!r}"
+
+    body_text = ctx[len(header):].lstrip()
+    body = json.loads(body_text)
+
+    for key in ("file", "diff", "passed_checks", "evaluate", "_evaluator_input"):
+        assert key in body, f"missing key {key!r} in payload"
+
+    rule = next((r for r in body["evaluate"] if r["id"] == "needs-context"), None)
+    assert rule is not None, f"rule missing from evaluate: {body['evaluate']}"
+    assert rule.get("context", {}).get("lines") == 3
+
+    eval_input = body["_evaluator_input"]
+    assert isinstance(eval_input, str) and eval_input.startswith("SEMANTIC EVALUATION REQUIRED")
+    assert '<EXCERPT_FOR_RULE rule="needs-context">' in eval_input, (
+        "excerpt block missing from _evaluator_input -- "
+        "hook is likely re-rendering from the stripped outer rules"
+    )
+    assert "<TRUSTED_POLICY>" in eval_input
+    assert "<UNTRUSTED_EVIDENCE>" in eval_input
+
+
+# ---------------------------------------------------------------------------
+# 7. Hook is a thin shim -- exits via python3 exec
 # ---------------------------------------------------------------------------
 
 

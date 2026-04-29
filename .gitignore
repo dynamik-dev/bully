@@ -17,3 +17,6 @@ dist/
 
 # Eval harness workspace
 bench/eval-runs/
+
+# Local development worktrees (superpowers workflow)
+.worktrees/

@@ -3507,11 +3507,22 @@ def _hook_mode() -> int:
         sys.stderr.write(_format_blocked_stderr(result))
         return 2
     if status == "evaluate":
-        ctx = build_semantic_payload(
-            file_path=result.get("file", file_path),
-            diff=result.get("diff", diff),
-            rules=result.get("evaluate", []),
-            passed_checks=result.get("passed_checks", []),
+        # Forward the dict that run_pipeline already produced.
+        # `_evaluator_input` was built from the unstripped rules (with
+        # `_excerpt`) inside `build_semantic_payload_dict`, so it carries
+        # `<EXCERPT_FOR_RULE>` blocks. Re-rendering here from the outer
+        # `evaluate` array would drop them.
+        payload = {
+            "file": result.get("file", file_path),
+            "diff": result.get("diff", diff),
+            "passed_checks": result.get("passed_checks", []),
+            "evaluate": result.get("evaluate", []),
+            "_evaluator_input": result.get("_evaluator_input", ""),
+        }
+        if "line_anchors" in result:
+            payload["line_anchors"] = result["line_anchors"]
+        ctx = "AGENTIC LINT SEMANTIC EVALUATION REQUIRED:\n\n" + json.dumps(
+            payload, indent=2
         )
         print(
             json.dumps(
