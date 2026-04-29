@@ -67,3 +67,7 @@ Follow with brief noisy / dead / slow sections. Do not dump `by_rule` unless ask
 ## Step 5: Hand off
 
 Do not edit `.bully.yml` directly. When the user confirms a recommendation, hand off to the `bully-author` skill to apply it -- that skill tests rules against fixtures before writing.
+
+## Background scheduling
+
+For continuous self-pruning rather than ad-hoc cleanup, the `bully-scheduler` agent (under `agents/bully-scheduler.md`) runs the same analyzer on a schedule and opens at most one rule-retirement PR per run. Wire it via the `/schedule` skill — there's no separate config needed.

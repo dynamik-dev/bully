@@ -216,3 +216,7 @@ The substrate is in place; some autonomous improvements are still deferred:
 - **Rule discovery from unflagged fixes** — when the agent edits the same pattern repeatedly without any rule firing, that could suggest a new rule. Not wired.
 
 These are the logical next features if the substrate proves useful. Deferred deliberately — they need real usage data to be meaningful rather than speculative.
+
+## Coverage metric
+
+`bully coverage [--json]` reports, per file seen in telemetry, the number of rules whose `scope` glob matches that file. Files with zero matches are flagged as "uncovered" — usually a sign that the rule set has gaps in a directory or file type. This is a crude metric (it doesn't weight by historical violation rate yet) but answers the article's open question of "what fraction of risky edits are caught by at least one rule?" at a per-file granularity.

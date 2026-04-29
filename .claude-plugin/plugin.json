@@ -1,7 +1,7 @@
 {
   "name": "bully",
   "description": "Agent-native lint pipeline for Claude Code. PostToolUse hook enforces a single .bully.yml across script and semantic rules.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "author": {
     "name": "dynamik-dev"
   },
