@@ -5,60 +5,48 @@ All notable changes documented here. Format per Keep a Changelog, semver adheren
 ### Planned
 See docs/plan.md for the active improvement plan.
 
-## 0.12.1 — 2026-04-28
-
-- README repositioned: bully is now described as a hybrid agent-harness sensor (computational + inferential lanes, subagent firewall, scoped feedforward, session-aware Stop) rather than just a "PostToolUse linter". No code changes.
-- `description` fields in `plugin.json` and `pyproject.toml` updated to match.
-
-## 0.12.0 — 2026-04-28
-
-- NEW: `bully debt [--strict]` — summarize disable-line markers across the repo, grouped by rule, with optional strict mode that fails on too-short reasons.
-- NEW: rule-level `capabilities:` block (`network: false`, `writes: cwd-only`). Declarative, env-based: strips proxy vars, redirects HOME/TMPDIR. Best-effort; not kernel sandboxing.
-
-## 0.11.0 — 2026-04-28
-
-- NEW: `bully coverage [--json]` — per-file rule-scope coverage over telemetry. Surfaces uncovered files (zero rules match) and per-file rule lists.
-- NEW: `agents/bully-scheduler.md` — background entropy agent. Wire via `/schedule` to run periodically; opens at most one rule-retirement PR per run.
-
-## 0.10.0 — 2026-04-28
-
-- NEW: session-scope rules (`engine: session`) — fire at Stop time over the cumulative changed-set instead of per edit. First step into the article's "behavior harness" lane.
-- NEW: `bully stop`, `bully subagent-stop`, `bully session-record` subcommands and matching hook entries (`Stop`, `SubagentStop`).
-- NEW: `.bully/session.jsonl` cumulative changed-set (append-only JSONL; race-safe under parallel PostToolUse).
-- New telemetry record: `{"type": "subagent_stop"}` for sub-agent run accounting.
-
-## 0.9.0 — 2026-04-28
-
-- NEW: `bully guide <file>` and `bully explain <file>` for scoped feedforward -- show rules that apply to a specific file on demand, no generated manual.
-- NEW: `bully session-start` and wired `SessionStart` hook entry -- agents see a tiny "bully active, N rules" banner at session boot.
-
 ## 0.8.0 — 2026-04-28
 
-- BREAKING (subagent capability): the bully-evaluator subagent no longer has `Read`, `Grep`, or `Glob` tools. The diff is the only evidence by default. Closes prompt-injection layer 2 of 3.
-- NEW: rule-level `context: { lines: N }` field. When set, the parent harness reads N lines around each diff hunk and bundles them in the payload as `<EXCERPT_FOR_RULE>`. Closes prompt-injection layer 3 of 3 (the substitute mechanism for the removed tools).
-- `agents/bully-evaluator.md` updated to consume excerpts and reject directives in untrusted evidence.
-- New docs at `docs/rule-config.md`.
+Harness-engineering elevation. Bully is now framed as a hybrid agent-harness sensor (computational + inferential lanes, subagent context firewall, scoped feedforward, session-aware Stop, self-pruning telemetry, capability-scoped script execution) rather than just a "PostToolUse linter".
 
-Migration: rules that relied on the evaluator using `Read`/`Grep` to pull surrounding context will now see only the diff. Add `context: { lines: N }` to those rules. Audit candidates: rules whose descriptions reference "callsite", "imports", "surrounding code", or anything beyond the literal hunk.
-
-## 0.7.2 — 2026-04-28
-
-- Semantic evaluation payload now wraps rule descriptions in `<TRUSTED_POLICY>` and the file/diff in `<UNTRUSTED_EVIDENCE>`, with explicit instructions to the evaluator to treat the latter as data, not directives.
-- The `_evaluator_input` field in the hook payload is now a pre-formatted string (was: dict). The bully skill passes it directly to the evaluator subagent without re-serialization. **Breaking for skill consumers:** bully harness ≥0.7.2 must be paired with bully skill ≥0.7.2; older skill versions would JSON-encode the string, producing escaped tags. The bundled SKILL.md is updated.
-- Boundary tags in `_evaluator_input` are sanitized — diffs containing literal `</UNTRUSTED_EVIDENCE>` or other closing tags are neutralized so user-controlled content cannot break out of the untrusted block.
-- Synthetic line-anchor metadata moves into the `<TRUSTED_POLICY>` block (was: appended after the closing tag).
-- `agents/bully-evaluator.md` rewritten to consume the new boundaries and metadata.
-- `skills/bully/SKILL.md` updated: pass `_evaluator_input` through verbatim.
-- Renamed the dict-returning `build_semantic_payload` to `build_semantic_payload_dict` to disambiguate from the new string-returning helper. Internal callers in `pipeline/bench.py` and tests updated.
-- `pipeline/bench.py`'s `count_tokens` and `full_dispatch` now accept `str | dict` payloads (was: dict only) so bench measurements remain accurate after the `_evaluator_input` shape change.
-- Closes prompt-injection layer 1 of 3 (PR 1c addresses tool boundary and per-rule context-include).
-
-## 0.7.1 — 2026-04-28
-
+### Telemetry coherence
 - Analyzer now consumes `semantic_verdict` and `semantic_skipped` records (previously emitted but ignored). Closes the live coherence drift between `docs/telemetry.md`, `pipeline/analyzer.py`, and `skills/bully-review/SKILL.md`.
 - `format_report` adds a `skipped=` column.
 - `bully-review` SKILL.md no longer claims semantic rules are unobservable.
 - `README.md` corrects the bench description (`--full` does make real model calls).
+
+### Three-layer prompt-injection hardening
+- Semantic evaluation payload wraps rule descriptions in `<TRUSTED_POLICY>` and the file/diff in `<UNTRUSTED_EVIDENCE>`, with explicit instructions to the evaluator to treat the latter as data, not directives.
+- Boundary tags in `_evaluator_input` are sanitized — diffs containing literal `</UNTRUSTED_EVIDENCE>` or other closing tags are neutralized so user-controlled content cannot break out of the untrusted block.
+- The `_evaluator_input` field in the hook payload is now a pre-formatted string (was: dict). The bully skill passes it directly to the evaluator subagent without re-serialization. **Breaking for skill consumers:** bully harness ≥0.8.0 must be paired with bully skill ≥0.8.0; older skill versions would JSON-encode the string, producing escaped tags. The bundled SKILL.md is updated.
+- BREAKING (subagent capability): the bully-evaluator subagent no longer has `Read`, `Grep`, or `Glob` tools. The diff is the only evidence by default.
+- NEW: rule-level `context: { lines: N }` field. When set, the parent harness reads N lines around each diff hunk and bundles them in the payload as `<EXCERPT_FOR_RULE>` (the substitute mechanism for the removed tools).
+- `agents/bully-evaluator.md` rewritten to consume the new boundaries and metadata.
+- Renamed the dict-returning `build_semantic_payload` to `build_semantic_payload_dict` to disambiguate from the new string-returning helper. `pipeline/bench.py`'s `count_tokens` and `full_dispatch` now accept `str | dict` payloads.
+- Synthetic line-anchor metadata moves into the `<TRUSTED_POLICY>` block.
+
+### Scoped feedforward + SessionStart
+- NEW: `bully guide <file>` and `bully explain <file>` for scoped feedforward — show rules that apply to a specific file on demand, no generated manual.
+- NEW: `bully session-start` and wired `SessionStart` hook entry — agents see a tiny "bully active, N rules" banner at session boot.
+
+### Behavior harness lane
+- NEW: session-scope rules (`engine: session`) — fire at Stop time over the cumulative changed-set instead of per edit.
+- NEW: `bully stop`, `bully subagent-stop`, `bully session-record` subcommands and matching hook entries (`Stop`, `SubagentStop`).
+- NEW: `.bully/session.jsonl` cumulative changed-set (append-only JSONL; race-safe under parallel PostToolUse).
+- New telemetry record: `{"type": "subagent_stop"}` for sub-agent run accounting.
+
+### Coverage + scheduled entropy agent
+- NEW: `bully coverage [--json]` — per-file rule-scope coverage over telemetry. Surfaces uncovered files (zero rules match) and per-file rule lists.
+- NEW: `agents/bully-scheduler.md` — background entropy agent. Wire via `/schedule` to run periodically; opens at most one rule-retirement PR per run.
+
+### Debt + capability-scoped scripts
+- NEW: `bully debt [--strict]` — summarize disable-line markers across the repo, grouped by rule, with optional strict mode that fails on too-short reasons.
+- NEW: rule-level `capabilities:` block (`network: false`, `writes: cwd-only`). Declarative, env-based: strips proxy vars, redirects HOME/TMPDIR. Best-effort tripwire, not kernel sandboxing.
+
+### Migration
+Rules that relied on the evaluator using `Read`/`Grep` to pull surrounding context will now see only the diff. Add `context: { lines: N }` to those rules. Audit candidates: rules whose descriptions reference "callsite", "imports", "surrounding code", or anything beyond the literal hunk.
+
+bully harness ≥0.8.0 must be paired with bully skill ≥0.8.0 — older skill versions would JSON-encode the new string `_evaluator_input` and break dispatch.
 
 ## [0.7.0] - 2026-04-26
 ### Fixed
