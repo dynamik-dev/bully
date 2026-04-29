@@ -62,3 +62,44 @@ def test_capabilities_default_is_unrestricted():
     base_env = {"HTTP_PROXY": "http://x", "PATH": "/usr/bin"}
     out = _capability_env(base_env, None)
     assert out == base_env
+
+
+def test_script_rule_subprocess_sees_capability_modified_env(tmp_path, monkeypatch):
+    """End-to-end: a rule with `network: false` runs a script that prints HTTP_PROXY.
+
+    The captured stdout must show the variable as unset, proving the env shim
+    is wired into execute_script_rule. Regression guard for the integration
+    point — without this test, dropping `env=...` from the subprocess call
+    would not fail any test.
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://upstream-proxy.local:8080")
+
+    cfg = tmp_path / ".bully.yml"
+    cfg.write_text(
+        """
+rules:
+  net-blocked:
+    description: tripwire on accidental network use
+    severity: error
+    engine: script
+    scope: ['**/*.py']
+    script: 'echo "HTTP_PROXY=${HTTP_PROXY:-UNSET}"; test -z "${HTTP_PROXY}"'
+    capabilities:
+      network: false
+"""
+    )
+    target = tmp_path / "x.py"
+    target.write_text("print('hi')\n")
+
+    # Trust the config so script execution isn't gated.
+    p_trust = _run(["--trust", "--config", str(cfg)], tmp_path)
+    assert p_trust.returncode == 0, (p_trust.stdout, p_trust.stderr)
+
+    p = _run(
+        ["--config", str(cfg), "--file", str(target), "--diff", "+ print('hi')"],
+        tmp_path,
+    )
+    # If env was NOT shimmed, HTTP_PROXY would be set and `test -z` exits 1
+    # (script verdict = violation). With the shim, HTTP_PROXY is unset and
+    # exits 0 (script verdict = pass).
+    assert p.returncode == 0, (p.stdout, p.stderr)

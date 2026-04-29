@@ -54,3 +54,35 @@ rules:
 ```
 
 This is declarative and best-effort, not kernel-level sandboxing. Tools that respect standard env vars (`HOME`, `TMPDIR`, `*_PROXY`, `NO_PROXY`) will be confined; tools that bypass them won't be. Treat capabilities as a clarity-and-tripwire mechanism — they document intent and surface accidents loudly. For real isolation, run the script under your platform's sandbox of choice (`firejail`, `bwrap`, `sandbox-exec`, container) outside bully.
+
+Note: `writes: cwd-only` creates `.bully/tmp/` (eagerly) the first time a rule with that capability runs. The directory belongs to the same `.bully/` tree as telemetry, which `bully init` adds to `.gitignore`. Existing checkouts may need a one-line addition.
+
+`bully validate --execute-dry-run` does NOT apply capabilities — it's a config-syntax probe, not a real run. If a script makes network calls during dry-run, the user's actual proxy will be visible. Treat it as expected; the runtime path is the one that matters.
+
+## Suppressions
+
+There are two ways to silence a rule on a specific line:
+
+```php
+// bully-disable next-line  -- silences ALL rules on the next line.
+$x = 1;
+
+// bully-disable: rule-id-a, rule-id-b -- silences specific rules on the next line.
+$y = 2;
+```
+
+This is the lightweight format — use it for one-off cases. `bully` ignores the line and moves on; `bully review` does not flag these.
+
+For governance-tracked debt with mandatory justification:
+
+```php
+// bully-disable-line rule-id reason: legacy api shape we're phasing out
+compact('a', 'b');
+```
+
+The `bully-disable-line <rule> reason: <text>` format is what `bully debt` audits. The reason is mandatory and tracked. Use it when:
+- The suppression should be visible to a future cleanup pass.
+- The reason needs to survive blame churn.
+- A reviewer should ask "is this still legacy, or shippable as-is?" later.
+
+`bully debt` lists every `bully-disable-line` marker grouped by rule. `bully debt --strict` exits non-zero if any marker has a reason shorter than 12 characters.
