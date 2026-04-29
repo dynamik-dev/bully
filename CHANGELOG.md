@@ -9,6 +9,9 @@ See docs/plan.md for the active improvement plan.
 
 Harness-engineering elevation. Bully is now framed as a hybrid agent-harness sensor (computational + inferential lanes, subagent context firewall, scoped feedforward, session-aware Stop, self-pruning telemetry, capability-scoped script execution) rather than just a "PostToolUse linter".
 
+### License
+- **License changed from MIT to Apache 2.0.** Adds explicit patent grant, requires attribution preservation, and requires marking modifications. Still permissive (no copyleft). New `NOTICE` file ships alongside `LICENSE`.
+
 ### Telemetry coherence
 - Analyzer now consumes `semantic_verdict` and `semantic_skipped` records (previously emitted but ignored). Closes the live coherence drift between `docs/telemetry.md`, `pipeline/analyzer.py`, and `skills/bully-review/SKILL.md`.
 - `format_report` adds a `skipped=` column.

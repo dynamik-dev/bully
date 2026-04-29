@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/dynamik-dev/bully",
   "repository": "https://github.com/dynamik-dev/bully",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "lint",
     "hooks",

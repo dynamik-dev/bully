@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/dynamik-dev/bully/actions/workflows/ci.yml"><img src="https://github.com/dynamik-dev/bully/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <img src="https://img.shields.io/badge/license-Apache_2.0-green" alt="Apache 2.0">
   <img src="https://img.shields.io/badge/Claude_Code-plugin-5A67D8" alt="Claude Code plugin">
 </p>
 
@@ -285,7 +285,7 @@ bash scripts/lint.sh      # ruff + shellcheck + pytest + dogfood
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Contributing
 
