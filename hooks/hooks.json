@@ -20,6 +20,26 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\" stop"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\" subagent-stop"
+          }
+        ]
+      }
     ]
   }
 }

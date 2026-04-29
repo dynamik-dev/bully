@@ -27,7 +27,7 @@ from pathlib import Path, PurePath
 # Config schema + parser
 # ---------------------------------------------------------------------------
 
-VALID_ENGINES = {"script", "semantic", "ast"}
+VALID_ENGINES = {"script", "semantic", "ast", "session"}
 VALID_SEVERITIES = {"error", "warning"}
 VALID_RULE_FIELDS = {
     "description",
@@ -40,6 +40,8 @@ VALID_RULE_FIELDS = {
     "language",
     "output",
     "context",
+    "when",
+    "require",
 }
 VALID_OUTPUT_MODES = {"parsed", "passthrough"}
 VALID_TOP_LEVEL = {"rules", "schema_version", "extends", "skip", "execution"}
@@ -128,6 +130,12 @@ class Rule:
     # the dispatcher reads N lines around each diff hunk and surfaces them
     # to the evaluator subagent as `<EXCERPT_FOR_RULE>` inside UNTRUSTED_EVIDENCE.
     context: dict | None = None
+    # PR 3: session-engine rules — `when.changed_any` selects the rule into
+    # the Stop check; `require.changed_any` declares which paths must also
+    # appear in the cumulative changed-set. Both are dicts shaped like
+    # `{"changed_any": [glob, ...]}`.
+    when: dict | None = None
+    require: dict | None = None
 
 
 @dataclass
@@ -375,13 +383,19 @@ def _parse_single_file(path: str) -> _ParsedConfig:
             in_execution_block = False
 
         # Nested rule-field block continuation (e.g. `context:` followed by
-        # `lines: 30` at indent 6). Flush back into `fields` as a dict
+        # `lines: 30` at indent 6, or `when:` followed by
+        # `changed_any: ['glob']`). Flush back into `fields` as a dict
         # whenever we dedent below indent 6.
         if in_nested_rule_field is not None:
             if indent >= 6 and ":" in stripped:
                 nkey, _, nvalue = stripped.partition(":")
                 nkey = nkey.strip()
                 nvalue_raw = nvalue.strip()
+                # Inline list (e.g. `changed_any: ['src/auth/**']`) -- store as list.
+                as_list = _parse_inline_list(nvalue_raw)
+                if as_list is not None:
+                    nested_rule_field_dict[nkey] = as_list
+                    continue
                 parsed_nval = _parse_scalar(nvalue_raw)
                 # Coerce numeric-looking values to int for ergonomics
                 # (`context.lines: 30` should be 30, not "30").
@@ -490,8 +504,9 @@ def _parse_single_file(path: str) -> _ParsedConfig:
                 folded_lines = []
                 field_lines[key] = lineno
                 continue
-            # `context:` with empty value opens a nested mapping at indent 6.
-            if key == "context" and value_raw == "":
+            # `context:` / `when:` / `require:` with empty value opens a
+            # nested mapping at indent 6.
+            if key in ("context", "when", "require") and value_raw == "":
                 in_nested_rule_field = key
                 nested_rule_field_dict = {}
                 field_lines[key] = lineno
@@ -540,7 +555,8 @@ def _build_rule(
     engine = str(fields.get("engine", "script"))
     if engine not in VALID_ENGINES:
         raise ConfigError(
-            f"rule '{rule_id}': invalid engine {engine!r} (must be 'script', 'semantic', or 'ast')",
+            f"rule '{rule_id}': invalid engine {engine!r} "
+            f"(must be 'script', 'semantic', 'ast', or 'session')",
             field_lines.get("engine", rule_line),
         )
 
@@ -589,6 +605,32 @@ def _build_rule(
             field_lines.get("language", rule_line),
         )
 
+    when_value = fields.get("when")
+    require_value = fields.get("require")
+    if engine == "session":
+        if script_value is not None:
+            raise ConfigError(
+                f"rule '{rule_id}': engine is 'session' but a 'script' field is set "
+                f"(contradiction -- session rules use when/require, not script)",
+                field_lines.get("script", rule_line),
+            )
+        if not isinstance(when_value, dict) or not isinstance(require_value, dict):
+            raise ConfigError(
+                f"rule '{rule_id}' (session): both 'when' and 'require' must be mappings",
+                field_lines.get("when", field_lines.get("require", rule_line)),
+            )
+    else:
+        if when_value is not None:
+            raise ConfigError(
+                f"rule '{rule_id}': 'when' is only valid when engine is 'session'",
+                field_lines.get("when", rule_line),
+            )
+        if require_value is not None:
+            raise ConfigError(
+                f"rule '{rule_id}': 'require' is only valid when engine is 'session'",
+                field_lines.get("require", rule_line),
+            )
+
     fix_hint_value = fields.get("fix_hint")
 
     context_value = fields.get("context")
@@ -627,6 +669,8 @@ def _build_rule(
         language=str(language_value) if language_value is not None else None,
         output_mode=output_mode,
         context=dict(context_value) if context_value is not None else None,
+        when=dict(when_value) if when_value is not None else None,
+        require=dict(require_value) if require_value is not None else None,
     )
 
 
@@ -3008,6 +3052,158 @@ def _cmd_session_start_main(argv: list[str]) -> int:
     return _cmd_session_start(args.config)
 
 
+# ---- session-record / stop / subagent-stop (PR 3) ----
+
+
+def _cmd_session_record(config_path: str | None, file_path: str) -> int:
+    """Append `file_path` to the cumulative session changed-set.
+
+    The changed-set lives at `.bully/session.json` next to the active config.
+    This is best-effort: if the JSON is corrupt we reinitialize, and any
+    OS error during write surfaces normally so callers can decide.
+    """
+    path = config_path or ".bully.yml"
+    cfg_abs = Path(path).resolve()
+    bully_dir = cfg_abs.parent / ".bully"
+    bully_dir.mkdir(exist_ok=True)
+    session_file = bully_dir / "session.json"
+    if session_file.exists():
+        try:
+            data = json.loads(session_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {"changed": []}
+    else:
+        data = {"changed": []}
+    if not isinstance(data, dict):
+        data = {"changed": []}
+    changed = data.get("changed")
+    if not isinstance(changed, list):
+        changed = []
+    if file_path not in changed:
+        changed.append(file_path)
+    data["changed"] = changed
+    session_file.write_text(json.dumps(data, indent=2))
+    return 0
+
+
+def _cmd_session_record_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="bully session-record")
+    parser.add_argument("--config", default=".bully.yml")
+    parser.add_argument("--file", required=True)
+    args = parser.parse_args(argv)
+    return _cmd_session_record(args.config, args.file)
+
+
+def _session_glob_match(path: str, pattern: str) -> bool:
+    """Match a posix path against a glob pattern. Supports `**` recursive segments."""
+    posix = path.replace("\\", "/")
+    if fnmatch.fnmatchcase(posix, pattern):
+        return True
+    # Best-effort `**` lowering: collapse to `*` and retry. This catches
+    # patterns like `tests/**auth**` where simple fnmatch fails on the
+    # leading `**` segment.
+    return "**" in pattern and fnmatch.fnmatchcase(posix, pattern.replace("**", "*"))
+
+
+def _cmd_stop(config_path: str | None) -> int:
+    """Evaluate session-engine rules over the cumulative changed-set.
+
+    Reads `.bully/session.json` (written by session-record on each edit).
+    For each `engine: session` rule whose `when.changed_any` matched any
+    file in the set, verify `require.changed_any` also matched at least
+    one file. Otherwise the rule fires.
+
+    Errors block (exit 2). On a clean Stop the session file is deleted so
+    the next session starts fresh.
+    """
+    path = config_path or ".bully.yml"
+    cfg_abs = Path(path).resolve()
+    if not cfg_abs.is_file():
+        return 0
+    bully_dir = cfg_abs.parent / ".bully"
+    session_file = bully_dir / "session.json"
+    if not session_file.exists():
+        return 0
+    try:
+        data = json.loads(session_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return 0
+    changed_raw = data.get("changed", []) if isinstance(data, dict) else []
+    changed: list[str] = [c for c in (changed_raw or []) if isinstance(c, str)]
+    if not changed:
+        return 0
+
+    try:
+        rules = parse_config(str(cfg_abs))
+    except ConfigError as e:
+        sys.stderr.write(f"AGENTIC LINT -- config error: {e}\n")
+        return 0
+    session_rules = [r for r in rules if r.engine == "session"]
+
+    def matches_any(globs: list[str]) -> bool:
+        for c in changed:
+            for pat in globs or []:
+                if _session_glob_match(c, pat):
+                    return True
+        return False
+
+    violations: list[tuple[str, str, str]] = []
+    for r in session_rules:
+        when_globs = (r.when or {}).get("changed_any", []) or []
+        if not isinstance(when_globs, list):
+            when_globs = []
+        if not matches_any(when_globs):
+            continue
+        require_globs = (r.require or {}).get("changed_any", []) or []
+        if not isinstance(require_globs, list):
+            require_globs = []
+        if matches_any(require_globs):
+            continue
+        violations.append((r.id, r.severity, r.description))
+
+    if not violations:
+        # Reset session at clean Stop so the next session starts fresh.
+        try:
+            session_file.unlink()
+        except FileNotFoundError:
+            pass
+        return 0
+
+    blocking = [v for v in violations if v[1] == "error"]
+    sys.stderr.write("bully session check failed:\n")
+    for rid, sev, desc in violations:
+        sys.stderr.write(f"- [{sev}] {rid}: {desc}\n")
+    return 2 if blocking else 0
+
+
+def _cmd_stop_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="bully stop")
+    parser.add_argument("--config", default=".bully.yml")
+    args = parser.parse_args(argv)
+    return _cmd_stop(args.config)
+
+
+def _cmd_subagent_stop(config_path: str | None) -> int:
+    """Append a subagent-completion telemetry record."""
+    path = config_path or ".bully.yml"
+    log_path = _telemetry_path(path)
+    if log_path is None:
+        return 0
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "type": "subagent_stop",
+    }
+    _append_record(log_path, record)
+    return 0
+
+
+def _cmd_subagent_stop_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="bully subagent-stop")
+    parser.add_argument("--config", default=".bully.yml")
+    args = parser.parse_args(argv)
+    return _cmd_subagent_stop(args.config)
+
+
 # ---- hook-mode + main ----
 
 
@@ -3048,6 +3244,20 @@ def _hook_mode() -> int:
     config = _find_config_upward(Path(file_path))
     if config is None:
         return 0
+
+    # PR 3: append the touched file to the cumulative session changed-set
+    # so engine: session rules can see it at Stop time. We record the file
+    # path relative to the config root when possible so user-visible globs
+    # (e.g. `src/auth/**`) match. Best-effort: never let session-record
+    # block the post-tool flow.
+    try:
+        try:
+            rel = str(Path(file_path).resolve().relative_to(Path(config).resolve().parent))
+        except ValueError:
+            rel = file_path
+        _cmd_session_record(str(config), rel)
+    except Exception:
+        pass
 
     diff = build_diff_context(
         tool_name=tool_name,
@@ -3111,6 +3321,12 @@ def main() -> None:
         sys.exit(_cmd_explain_subcommand_main(sys.argv[2:]))
     if len(sys.argv) >= 2 and sys.argv[1] == "session-start":
         sys.exit(_cmd_session_start_main(sys.argv[2:]))
+    if len(sys.argv) >= 2 and sys.argv[1] == "stop":
+        sys.exit(_cmd_stop_main(sys.argv[2:]))
+    if len(sys.argv) >= 2 and sys.argv[1] == "subagent-stop":
+        sys.exit(_cmd_subagent_stop_main(sys.argv[2:]))
+    if len(sys.argv) >= 2 and sys.argv[1] == "session-record":
+        sys.exit(_cmd_session_record_main(sys.argv[2:]))
 
     args = _parse_args(sys.argv[1:])
 

@@ -198,13 +198,16 @@ def test_no_config_found_exits_zero(tmp_path):
 def test_hook_script_exists_and_is_thin():
     """hook.sh should be a thin dispatch shim (no jq, no STDOUT_FILE dance).
 
-    Bumped from the original 6-line cap when SessionStart dispatch was added:
-    a `case ${1:-post-tool-use}` block with two arms still keeps this a
-    pure shim (no parsing, no logic), just route-by-first-arg.
+    Bumped from 12 to 18 when Stop / SubagentStop dispatch was added in
+    PR 3. The `case ${1:-post-tool-use}` block now has four arms (session-start,
+    stop, subagent-stop, post-tool-use|*) but still routes by first arg with
+    no parsing or logic.
     """
     content = HOOK.read_text()
     lines = [line for line in content.splitlines() if line.strip()]
-    assert len(lines) <= 12, f"hook.sh grew: {len(lines)} non-blank lines"
+    assert len(lines) <= 18, f"hook.sh grew: {len(lines)} non-blank lines"
     assert "jq" not in content
     assert "--hook-mode" in content
     assert "session-start" in content
+    assert "stop" in content
+    assert "subagent-stop" in content
