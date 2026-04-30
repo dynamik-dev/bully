@@ -231,15 +231,12 @@ def test_semantic_eval_emits_dict_payload_with_excerpt(tmp_path):
         SEMANTIC_RULE_WITH_CONTEXT_YAML,
     )
     target = project / "src" / "foo.py"
-    # Multi-line edit: the can-match filter (`_can_match_diff`) drops
-    # semantic rules when fewer than two lines were added, so ensure
-    # the hunk crosses that threshold.
     payload = {
         "tool_name": "Edit",
         "tool_input": {
             "file_path": str(target),
-            "old_string": "    d = 4\n    return a + b + c + d",
-            "new_string": "    d = 4\n    e = 5\n    f = 6\n    return a + b + c + d + e + f",
+            "old_string": "    d = 4",
+            "new_string": "    d = eval(input())",
         },
     }
     r = _run_hook(json.dumps(payload), project)

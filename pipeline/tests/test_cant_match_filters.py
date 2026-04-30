@@ -60,17 +60,41 @@ def test_pure_deletion_kept_for_refactor_rule():
     assert ok is True
 
 
-def test_too_few_added_lines_skipped():
-    diff = "@@ -5,1 +5,2 @@\n+only one new line\n"
+def test_single_added_line_is_dispatched():
+    """One-line additions are the common case for real semantic violations
+    (e.g. introducing `eval(input)`) -- the gate must let them through."""
+    diff = "@@ -5,1 +5,2 @@\n+result = eval(user_input)\n"
     ok, reason = _can_match_diff(_rule(), diff)
-    assert ok is False
-    assert reason == "too-few-added-lines"
+    assert ok is True, f"expected dispatch, got skip reason {reason!r}"
 
 
-def test_enough_added_lines_passes():
+def test_single_added_line_with_removal_is_dispatched():
+    """Mixed one-line edit (one removal, one addition) also passes."""
+    diff = "@@ -5,1 +5,1 @@\n-old_safe_call()\n+result = eval(user_input)\n"
+    ok, reason = _can_match_diff(_rule(), diff)
+    assert ok is True, f"expected dispatch, got skip reason {reason!r}"
+
+
+def test_multi_line_added_passes():
     diff = "@@ -5,1 +5,3 @@\n+added line one\n+added line two\n"
     ok, _ = _can_match_diff(_rule(), diff)
     assert ok is True
+
+
+def test_single_comment_line_still_skipped():
+    """The comment-only filter still has teeth on one-line edits."""
+    diff = "@@ -5,1 +5,2 @@\n+# just a single comment\n"
+    ok, reason = _can_match_diff(_rule("avoid bad names"), diff)
+    assert ok is False
+    assert reason == "comment-only-additions"
+
+
+def test_single_whitespace_line_still_skipped():
+    """The whitespace-only filter still has teeth on one-line edits."""
+    diff = "@@ -5,1 +5,2 @@\n+   \n"
+    ok, reason = _can_match_diff(_rule(), diff)
+    assert ok is False
+    assert reason == "whitespace-only-additions"
 
 
 def test_hash_comment_only_additions_skipped():

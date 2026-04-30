@@ -159,7 +159,7 @@ If `$BULLY` is empty, fall back to `python3 ~/.bully/pipeline/pipeline.py` for m
      --explain
    ```
 
-   The line for `<new-rule-id>` must show `dispatched`, not `skipped (empty-diff)` or `skipped (too-few-added-lines)`. If skipped, add lines to the fixture or supply a `--diff` that has more added lines.
+   The line for `<new-rule-id>` must show `dispatched`, not `skipped (empty-diff)`, `skipped (whitespace-only-additions)`, or `skipped (comment-only-additions)`. If skipped, ensure the fixture contains real (non-comment, non-whitespace) added lines or supply a `--diff` that does.
 7. For **ast rules**, the same exit-code protocol as script rules: violating must exit 2, clean must exit 0. Additionally verify the pattern directly with ast-grep before writing to the draft:
    ```bash
    ast-grep run --pattern '<pattern>' --lang <ts|csharp|php|…> /tmp/bully-probe-violating.<ext>

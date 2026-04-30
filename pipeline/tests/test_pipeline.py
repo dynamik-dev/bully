@@ -72,8 +72,6 @@ def test_pipeline_script_violation_blocks():
 
 
 def test_pipeline_clean_file_produces_semantic_payload():
-    # Provide a multi-line diff so the can't-match filter (plan 4.2) lets
-    # semantic rules through.
     diff = (
         "--- a/clean.php\n"
         "+++ b/clean.php\n"
@@ -89,6 +87,36 @@ def test_pipeline_clean_file_produces_semantic_payload():
     assert result["status"] == "evaluate"
     assert "no-compact" in result["passed_checks"]
     assert len(result["evaluate"]) >= 1
+
+
+def test_pipeline_single_line_semantic_edit_dispatches():
+    """A single-line addition of a real semantic violation must dispatch.
+
+    Pinned to a one-line diff: this would have been skipped under the old
+    `len(added) < 2` heuristic (the diff has exactly one added line and no
+    removed lines, so it doesn't pass any other gate). Confirms the
+    relaxation -- one-line introductions like `eval(input)` are exactly
+    what semantic rules should catch.
+    """
+    diff = (
+        "--- a/clean.php\n"
+        "+++ b/clean.php\n"
+        "@@ -13,1 +13,2 @@\n"
+        "+        $unused = $this->buildResult();\n"
+    )
+    result = run_pipeline(
+        str(FIXTURES / "basic-config.yml"),
+        str(FIXTURES / "clean.php"),
+        diff,
+    )
+    assert result["status"] == "evaluate", (
+        f"single-line semantic edit should dispatch; got {result.get('status')!r} "
+        f"with semantic_skipped={result.get('semantic_skipped')!r}"
+    )
+    rule_ids = [r["id"] for r in result["evaluate"]]
+    assert "inline-single-use-vars" in rule_ids, (
+        f"expected the semantic rule to be in evaluate list, got {rule_ids!r}"
+    )
 
 
 def test_pipeline_script_block_skips_semantic():

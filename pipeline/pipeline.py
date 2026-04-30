@@ -1638,7 +1638,15 @@ def _rule_add_perspective(description: str) -> bool:
 
 
 def _can_match_diff(rule: Rule, diff: str) -> tuple[bool, str]:
-    """Return (should_evaluate, skip_reason_if_not)."""
+    """Return (should_evaluate, skip_reason_if_not).
+
+    Cheap pre-dispatch gate that drops diffs that *can't* match a semantic
+    rule -- empty diffs, whitespace-only adds, comment-only adds (for rules
+    not about comments), and pure deletions for "avoid X" rules. The floor
+    is at least one non-whitespace, non-comment added line; one-line edits
+    like `eval(input)` are exactly the violations a semantic rule should
+    catch, so they pass through.
+    """
     if not diff.strip():
         return False, "empty-diff"
 
@@ -1653,12 +1661,6 @@ def _can_match_diff(rule: Rule, diff: str) -> tuple[bool, str]:
 
     if not added and removed and _rule_add_perspective(rule.description):
         return False, "pure-deletion-add-perspective-rule"
-
-    if len(added) < 2 and not removed:
-        return False, "too-few-added-lines"
-
-    if added and len(added) < 2:
-        return False, "too-few-added-lines"
 
     return True, ""
 
