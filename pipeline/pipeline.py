@@ -3179,8 +3179,8 @@ def _cmd_stop(config_path: str | None) -> int:
     `require.changed_any` also matched at least one file. Otherwise the rule
     fires.
 
-    Errors block (exit 2). On a clean Stop the session file is deleted so
-    the next session starts fresh.
+    Errors block (exit 2). On any non-blocking Stop (clean or warning-only)
+    the session file is deleted so the next session starts fresh.
     """
     path = config_path or ".bully.yml"
     cfg_abs = Path(path).resolve()
@@ -3247,19 +3247,22 @@ def _cmd_stop(config_path: str | None) -> int:
             continue
         violations.append((r.id, r.severity, r.description))
 
-    if not violations:
-        # Reset session at clean Stop so the next session starts fresh.
+    blocking = [v for v in violations if v[1] == "error"]
+    if violations:
+        sys.stderr.write("bully session check failed:\n")
+        for rid, sev, desc in violations:
+            sys.stderr.write(f"- [{sev}] {rid}: {desc}\n")
+    if not blocking:
+        # Reset session at any non-blocking Stop (no violations, or warnings
+        # only) so the next session starts fresh. Leaving session.jsonl in
+        # place on a warning-only stop would re-fire the same warnings on
+        # every subsequent Stop until a clean stop occurred.
         try:
             session_file.unlink()
         except FileNotFoundError:
             pass
         return 0
-
-    blocking = [v for v in violations if v[1] == "error"]
-    sys.stderr.write("bully session check failed:\n")
-    for rid, sev, desc in violations:
-        sys.stderr.write(f"- [{sev}] {rid}: {desc}\n")
-    return 2 if blocking else 0
+    return 2
 
 
 def _cmd_stop_main(argv: list[str]) -> int:
