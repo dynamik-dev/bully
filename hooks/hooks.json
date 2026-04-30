@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\" session-start"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" session-start"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\" stop"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" stop"
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/pipeline/hook.sh\" subagent-stop"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" subagent-stop"
           }
         ]
       }

@@ -17,13 +17,14 @@ fi
 # what the repo committed. Skip the machine-local trust gate.
 export BULLY_TRUST_ALL=1
 
-# Resolve the bully command. Prefer the installed console script (eats our own
-# dog food about the new entrypoint); fall back to the in-tree pipeline.py for
-# fresh checkouts where `pip install -e .` has not been run yet.
+# Resolve the bully command. Prefer the installed console script; fall back
+# to `python3 -m bully` (with PYTHONPATH set) for fresh checkouts where
+# `pip install -e .` has not been run yet.
 if command -v bully >/dev/null 2>&1; then
   BULLY=(bully lint)
 else
-  BULLY=(python3 "$REPO_DIR/pipeline/pipeline.py" --file)
+  export PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+  BULLY=(python3 -m bully --file)
 fi
 
 # Sanity preamble: confirm the config parses cleanly before iterating. Bails
@@ -32,7 +33,7 @@ fi
 if command -v bully >/dev/null 2>&1; then
   bully validate --config "$CONFIG" >/dev/null
 else
-  python3 "$REPO_DIR/pipeline/pipeline.py" --validate --config "$CONFIG" >/dev/null
+  python3 -m bully --validate --config "$CONFIG" >/dev/null
 fi
 
 fail=0
@@ -48,9 +49,11 @@ while IFS= read -r file; do
   fi
 done < <(
   find \
-    pipeline \
+    src \
+    tests \
     skills \
     scripts \
+    hooks \
     docs \
     examples \
     -type f \

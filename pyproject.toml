@@ -22,19 +22,15 @@ dev = [
 bench = ["anthropic>=0.40"]
 
 [project.scripts]
-bully = "pipeline.pipeline:main"
+bully = "bully.cli:main"
 
-[tool.setuptools]
-# `pip install -e .` makes the `pipeline` package importable so the
-# `bully` console script can resolve `pipeline.pipeline:main`. The hook
-# (`pipeline/hook.sh`) still invokes `pipeline.py` by absolute path -- a
-# console script may not be on $PATH inside the Claude Code hook env.
-packages = ["pipeline"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["pipeline/.pytest_cache", "bench/fixtures"]
+extend-exclude = [".pytest_cache", "bench/fixtures"]
 
 [tool.ruff.lint]
 select = [
@@ -52,10 +48,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"pipeline/tests/*" = ["E402"]  # tests adjust sys.path before importing
+"src/bully/__init__.py" = ["F401", "E402"]
+"src/bully/**/__init__.py" = ["F401"]
+"tests/*" = ["E402", "F401"]
 
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests"]
+testpaths = ["tests"]
+pythonpath = ["src"]

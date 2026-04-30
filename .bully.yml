@@ -3,11 +3,11 @@ schema_version: 1
 rules:
   stdlib-only:
     description: >
-      pipeline.py and analyzer.py must stay stdlib-only. No imports of third-party
+      The bully package must stay stdlib-only. No imports of third-party
       runtime packages. This is a hard invariant because the pipeline runs in the
       Claude Code hook loop and cannot assume a virtualenv.
     engine: script
-    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    scope: ["src/bully/**/*.py"]
     severity: error
     script: "grep -nE '^(import|from)[[:space:]]+(yaml|requests|click|rich|numpy|pandas|pydantic|toml|httpx|aiohttp)' {file} && exit 1 || exit 0"
 
@@ -57,11 +57,12 @@ rules:
 
   no-print-in-pipeline-source:
     description: >
-      In pipeline.py and analyzer.py, only `main()` should call `print()`.
-      Library-level code must return data or write to stderr, never print
-      directly -- callers (hooks, tests) need to consume the return value.
+      In the bully library, only CLI entry points (cli/__init__.py, cli/*.py
+      subcommands, semantic/analyzer.py:main) should call `print()`. Library
+      code must return data or write to stderr — callers need to consume
+      the return value.
     engine: semantic
-    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    scope: ["src/bully/**/*.py"]
     severity: warning
 
   tests-assert-real-behavior:
@@ -70,7 +71,7 @@ rules:
       computed results. A test whose only assertion is `is not None`,
       `== True`, or "it did not raise" is hollow and must be strengthened.
     engine: semantic
-    scope: "pipeline/tests/test_*.py"
+    scope: "tests/test_*.py"
     severity: warning
 
   prefer-perf-counter:
@@ -79,7 +80,7 @@ rules:
       `time.time()` is a wall-clock that can jump backwards on NTP sync;
       `perf_counter()` is monotonic and ideal for latency measurement.
     engine: ast
-    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    scope: ["src/bully/**/*.py"]
     severity: error
     pattern: "time.time()"
 
@@ -91,7 +92,7 @@ rules:
       is genuinely safe (input is `shlex.quote`'d, etc.), add a per-line
       `bully-disable: no-shell-true-subprocess <reason>`.
     engine: ast
-    scope: ["pipeline/pipeline.py", "pipeline/analyzer.py"]
+    scope: ["src/bully/**/*.py"]
     severity: error
     pattern: "subprocess.run($$$, shell=True, $$$)"
 

@@ -16,7 +16,7 @@ echo "=> ruff format --check"
 if ! ruff format --check .; then fail=1; fi
 
 echo "=> shellcheck"
-if ! shellcheck pipeline/hook.sh scripts/*.sh; then fail=1; fi
+if ! shellcheck hooks/hook.sh scripts/*.sh; then fail=1; fi
 
 echo "=> pytest"
 if ! pytest -q; then fail=1; fi

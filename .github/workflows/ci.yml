@@ -25,7 +25,7 @@ jobs:
         run: ruff format --check .
 
       - name: shellcheck
-        run: shellcheck pipeline/hook.sh scripts/*.sh
+        run: shellcheck hooks/hook.sh scripts/*.sh
 
       - name: pytest
         run: pytest -q
