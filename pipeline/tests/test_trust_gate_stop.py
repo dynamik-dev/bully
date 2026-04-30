@@ -1,10 +1,11 @@
-"""Tests for the trust gate on `_cmd_session_record` and `_cmd_stop`.
+"""Tests for the trust gate on session-lifecycle commands.
 
-The PostToolUse hook calls `_cmd_session_record` BEFORE `run_pipeline` (which
-is where the trust gate normally fires), and `bully stop` is its own
-subcommand. Both must enforce the trust boundary themselves: an untrusted
-or mismatched config must NOT create `.bully/`, append to `session.jsonl`,
-parse rules, or return a blocking exit code.
+`_cmd_session_record`, `_cmd_stop`, `_cmd_session_start`, and
+`_cmd_subagent_stop` are all invoked from hook handlers BEFORE (or instead
+of) `run_pipeline` -- the place where the trust gate normally fires. Each
+must enforce the trust boundary itself: an untrusted or mismatched config
+must NOT parse rules, create `.bully/`, append to any telemetry file, or
+emit a `session_init` banner.
 
 These tests override the global conftest BULLY_TRUST_ALL=1 bypass.
 """
@@ -18,7 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline import (  # noqa: E402
     _cmd_session_record,
+    _cmd_session_start,
     _cmd_stop,
+    _cmd_subagent_stop,
     _cmd_trust,
 )
 
@@ -182,3 +185,160 @@ def test_stop_runs_normally_after_trust(tmp_path, isolated_trust_store, capsys):
     assert rc == 2
     captured = capsys.readouterr()
     assert "auth-needs-tests" in captured.err
+
+
+# ---- _cmd_session_start -------------------------------------------------
+
+
+def _write_simple_config(tmp_path: Path) -> Path:
+    """A minimal config sufficient for session-start to want to parse + log."""
+    p = tmp_path / ".bully.yml"
+    p.write_text(
+        "schema_version: 1\n"
+        "rules:\n"
+        "  noop:\n"
+        "    description: noop\n"
+        "    severity: warning\n"
+        "    engine: script\n"
+        "    scope: ['**']\n"
+        "    script: 'true'\n"
+    )
+    return p
+
+
+def test_session_start_untrusted_does_not_parse_rules(tmp_path, isolated_trust_store, capsys):
+    """An untrusted config must not yield the rule-count banner (parse skipped)."""
+    cfg = _write_simple_config(tmp_path)
+    # Pre-create .bully/ so a telemetry write WOULD succeed if the gate failed.
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_session_start(str(cfg))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    # The banner is the only signal that parse_config ran; absence proves it didn't.
+    assert "bully active" not in captured.out
+    assert "rules configured" not in captured.out
+    # And the gate is silent on stderr (hook-handler-friendly).
+    assert captured.err == ""
+
+
+def test_session_start_untrusted_does_not_create_bully_dir(tmp_path, isolated_trust_store):
+    """An untrusted config must not cause .bully/ to be created."""
+    cfg = _write_simple_config(tmp_path)
+
+    rc = _cmd_session_start(str(cfg))
+
+    assert rc == 0
+    assert not (tmp_path / ".bully").exists()
+
+
+def test_session_start_untrusted_does_not_write_telemetry(tmp_path, isolated_trust_store):
+    """Even with .bully/ already present, untrusted must not stamp session_init."""
+    cfg = _write_simple_config(tmp_path)
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_session_start(str(cfg))
+
+    assert rc == 0
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert not log.exists()
+
+
+def test_session_start_mismatch_does_not_write_telemetry(tmp_path, isolated_trust_store):
+    """A trust-then-mutate config is 'mismatch' and must also be gated out."""
+    cfg = _write_simple_config(tmp_path)
+    _cmd_trust(str(cfg), refresh=False)
+    cfg.write_text(cfg.read_text() + "# mutated\n")
+
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_session_start(str(cfg))
+
+    assert rc == 0
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert not log.exists()
+
+
+def test_session_start_writes_after_trust(tmp_path, isolated_trust_store, capsys):
+    """Sanity: once trusted, session-start emits the banner and stamps telemetry."""
+    cfg = _write_simple_config(tmp_path)
+    _cmd_trust(str(cfg), refresh=False)
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_session_start(str(cfg))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "bully active" in captured.out
+    assert "1 rules configured" in captured.out
+
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert log.exists()
+    assert "session_init" in log.read_text()
+
+
+# ---- _cmd_subagent_stop -------------------------------------------------
+
+
+def test_subagent_stop_untrusted_does_not_create_bully_dir(tmp_path, isolated_trust_store):
+    """An untrusted config must not cause .bully/ to be created."""
+    cfg = _write_simple_config(tmp_path)
+
+    rc = _cmd_subagent_stop(str(cfg))
+
+    assert rc == 0
+    assert not (tmp_path / ".bully").exists()
+
+
+def test_subagent_stop_untrusted_does_not_write_telemetry(tmp_path, isolated_trust_store):
+    """Even with .bully/ already present, untrusted must not append a record."""
+    cfg = _write_simple_config(tmp_path)
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_subagent_stop(str(cfg))
+
+    assert rc == 0
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert not log.exists()
+
+
+def test_subagent_stop_mismatch_does_not_write_telemetry(tmp_path, isolated_trust_store):
+    """A trust-then-mutate config is 'mismatch' and must also be gated out."""
+    cfg = _write_simple_config(tmp_path)
+    _cmd_trust(str(cfg), refresh=False)
+    cfg.write_text(cfg.read_text() + "# mutated\n")
+
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_subagent_stop(str(cfg))
+
+    assert rc == 0
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert not log.exists()
+
+
+def test_subagent_stop_untrusted_is_silent(tmp_path, isolated_trust_store, capsys):
+    """The gate is silent -- hook handlers wrap in best-effort try/except."""
+    cfg = _write_simple_config(tmp_path)
+
+    rc = _cmd_subagent_stop(str(cfg))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_subagent_stop_writes_after_trust(tmp_path, isolated_trust_store):
+    """Sanity: once trusted, subagent-stop appends the subagent_stop record."""
+    cfg = _write_simple_config(tmp_path)
+    _cmd_trust(str(cfg), refresh=False)
+    (tmp_path / ".bully").mkdir()
+
+    rc = _cmd_subagent_stop(str(cfg))
+
+    assert rc == 0
+    log = tmp_path / ".bully" / "log.jsonl"
+    assert log.exists()
+    assert "subagent_stop" in log.read_text()

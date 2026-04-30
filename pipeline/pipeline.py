@@ -1598,7 +1598,16 @@ def execute_ast_rule(rule: Rule, file_path: str) -> list[Violation]:
 
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|--)|^\s*/\*|^\s*\*/|^\s*\*\s")
 
-_ADD_PERSPECTIVE_HINTS = ("avoid", "no ", "no-", "ban", "don't", "dont", "forbid")
+# Word-boundary matcher for "avoid X being added" rule descriptions. Trigger
+# words ("avoid", "no", "ban", "don't"/"dont", "forbid") match only as whole
+# tokens. The earlier substring-based matcher false-flagged "banner" via
+# "ban", "avoidance" via "avoid", and "no-op" via "no-"; word boundaries fix
+# the first two, and the negative lookahead on "no" rejects hyphenated
+# compounds like "no-op" so they aren't read as imperative "no X" rules.
+_ADD_PERSPECTIVE_RE = re.compile(
+    r"\b(?:avoid|ban|forbid|don'?t)\b|\bno\b(?!-)",
+    re.IGNORECASE,
+)
 
 
 def _hunk_added_lines(diff: str) -> list[str]:
@@ -1633,8 +1642,15 @@ def _all_comment(lines: list[str]) -> bool:
 
 
 def _rule_add_perspective(description: str) -> bool:
-    d = description.lower()
-    return any(h in d for h in _ADD_PERSPECTIVE_HINTS)
+    """True if `description` reads like an "avoid X being added" rule.
+
+    Trigger words ("avoid", "no", "ban", "don't"/"dont", "forbid") must
+    match as whole tokens via word boundaries -- substring matches inside
+    larger words ("banner", "avoidance", "no-op") don't qualify. Matching
+    is case-insensitive. Used by `_can_match_diff` to skip pure-deletion
+    diffs against rules that only fire when something new is introduced.
+    """
+    return _ADD_PERSPECTIVE_RE.search(description) is not None
 
 
 def _can_match_diff(rule: Rule, diff: str) -> tuple[bool, str]:
@@ -3107,6 +3123,14 @@ def _cmd_session_start(config_path: str | None) -> int:
     path = config_path or ".bully.yml"
     if not Path(path).is_file():
         return 0  # silent -- bully not configured here
+    # Trust gate: refuse to parse rules, emit a banner, or stamp a
+    # `session_init` telemetry record for an un-reviewed config. The hook
+    # caller wraps this in a best-effort try/except, so a silent return 0
+    # is the right shape -- run_pipeline will surface the untrusted message
+    # on the next PostToolUse via _untrusted_stderr.
+    trust_status, _ = _trust_status(str(Path(path).resolve()))
+    if trust_status != "trusted":
+        return 0
     try:
         rules = parse_config(path)
     except ConfigError:
@@ -3277,6 +3301,16 @@ def _cmd_stop_main(argv: list[str]) -> int:
 def _cmd_subagent_stop(config_path: str | None) -> int:
     """Append a subagent-completion telemetry record."""
     path = config_path or ".bully.yml"
+    cfg_abs = Path(path).resolve()
+    # Trust gate: refuse to append telemetry for an un-reviewed config. The
+    # hook caller wraps this in a best-effort try/except, so a silent
+    # return 0 is the right shape -- run_pipeline will surface the
+    # untrusted message on the next PostToolUse via _untrusted_stderr.
+    if not cfg_abs.is_file():
+        return 0
+    trust_status, _ = _trust_status(str(cfg_abs))
+    if trust_status != "trusted":
+        return 0
     log_path = _telemetry_path(path)
     if log_path is None:
         return 0
