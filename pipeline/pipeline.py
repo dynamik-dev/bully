@@ -1598,7 +1598,16 @@ def execute_ast_rule(rule: Rule, file_path: str) -> list[Violation]:
 
 _COMMENT_LINE_RE = re.compile(r"^\s*(?://|#|--)|^\s*/\*|^\s*\*/|^\s*\*\s")
 
-_ADD_PERSPECTIVE_HINTS = ("avoid", "no ", "no-", "ban", "don't", "dont", "forbid")
+# Word-boundary matcher for "avoid X being added" rule descriptions. Trigger
+# words ("avoid", "no", "ban", "don't"/"dont", "forbid") match only as whole
+# tokens. The earlier substring-based matcher false-flagged "banner" via
+# "ban", "avoidance" via "avoid", and "no-op" via "no-"; word boundaries fix
+# the first two, and the negative lookahead on "no" rejects hyphenated
+# compounds like "no-op" so they aren't read as imperative "no X" rules.
+_ADD_PERSPECTIVE_RE = re.compile(
+    r"\b(?:avoid|ban|forbid|don'?t)\b|\bno\b(?!-)",
+    re.IGNORECASE,
+)
 
 
 def _hunk_added_lines(diff: str) -> list[str]:
@@ -1633,8 +1642,15 @@ def _all_comment(lines: list[str]) -> bool:
 
 
 def _rule_add_perspective(description: str) -> bool:
-    d = description.lower()
-    return any(h in d for h in _ADD_PERSPECTIVE_HINTS)
+    """True if `description` reads like an "avoid X being added" rule.
+
+    Trigger words ("avoid", "no", "ban", "don't"/"dont", "forbid") must
+    match as whole tokens via word boundaries -- substring matches inside
+    larger words ("banner", "avoidance", "no-op") don't qualify. Matching
+    is case-insensitive. Used by `_can_match_diff` to skip pure-deletion
+    diffs against rules that only fire when something new is introduced.
+    """
+    return _ADD_PERSPECTIVE_RE.search(description) is not None
 
 
 def _can_match_diff(rule: Rule, diff: str) -> tuple[bool, str]:
